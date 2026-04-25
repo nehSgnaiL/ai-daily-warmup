@@ -59,7 +59,7 @@ bash ./bin/install-scheduler.sh --uninstall
 .\bin\install-scheduler.ps1 -Uninstall
 ```
 
-- Check runing log
+- Check running log
 
 Each provider run appends one row to `WARMUP_LOG_PATH`, the runners keep only the latest 100 rows.
 
