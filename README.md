@@ -11,7 +11,7 @@ If you want that window to **open right when you sit down to work in the morning
 #### 1. Clone this Repo
 
 ```bash
-git clone https://github.com/yourusername/ai-daily-warmup.git
+git clone https://github.com/nehSgnaiL/ai-daily-warmup.git
 cd ai-daily-warmup
 ```
 
