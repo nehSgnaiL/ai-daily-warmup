@@ -13,7 +13,7 @@ bin/
   install-scheduler.sh     # macOS/Linux scheduler installer
   install-scheduler.ps1    # Windows scheduler installer
 config/
-  default.env              # provider, schedule, and wrapper settings
+  default.env              # provider and schedule settings
 ```
 
 ## Configure
@@ -25,9 +25,29 @@ WARMUP_PROVIDERS=codex
 WARMUP_TIMEZONE=Asia/Hong_Kong
 WARMUP_HOURS=8,13,18
 WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
+
+CODEX_PATH=codex
+CODEX_ARGS=--quiet
+CODEX_MODEL=
+CODEX_CREDENTIAL_PATH=~/.codex/auth.json
+CODEX_ENV_FILE=
+CODEX_WORKDIR=
 ```
 
 Use `WARMUP_PROVIDERS=claude,codex,gemini` to warm up more than one CLI.
+
+Set `*_PATH` to a custom executable path when a provider should run through a
+different command or script:
+
+```bash
+CODEX_PATH=~/bin/codex-shadow-home
+```
+
+Set `*_WORKDIR` when a provider should start from a stable workspace:
+
+```bash
+CODEX_WORKDIR=~/LIANG_Shen/opt/codex_warmup_workspace
+```
 
 ## Install The Schedule
 

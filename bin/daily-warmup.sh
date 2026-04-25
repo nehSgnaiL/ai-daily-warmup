@@ -69,6 +69,10 @@ read_env_file() {
 
 expand_path() {
   local value="$1"
+  if [[ -z "${value}" ]]; then
+    return 0
+  fi
+
   case "${value}" in
     "~") printf '%s\n' "${HOME}" ;;
     "~/"*) printf '%s/%s\n' "${HOME}" "${value#"~/"}" ;;
@@ -100,7 +104,8 @@ config_value() {
 
 run_provider() {
   local provider="$1"
-  local prefix path args model credential_path env_file prompt run_dir status
+  local prefix path args model credential_path env_file prompt run_dir configured_workdir status
+  local remove_run_dir
   local -a arg_list env_pairs
 
   prefix="$(printf '%s' "${provider}" | tr '[:lower:]' '[:upper:]')"
@@ -109,6 +114,7 @@ run_provider() {
   model="$(config_value "${prefix}_MODEL")"
   credential_path="$(expand_path "$(config_value "${prefix}_CREDENTIAL_PATH")")"
   env_file="$(expand_path "$(config_value "${prefix}_ENV_FILE")")"
+  configured_workdir="$(expand_path "$(config_value "${prefix}_WORKDIR")")"
   prompt="${WARMUP_PROMPT:-${DEFAULT_WARMUP_PROMPT}}"
 
   if [[ -z "${path}" ]]; then
@@ -144,7 +150,14 @@ run_provider() {
     arg_list+=(--model "${model}")
   fi
 
-  run_dir="$(mktemp -d)"
+  remove_run_dir=false
+  if [[ -n "${configured_workdir}" ]]; then
+    mkdir -p "${configured_workdir}"
+    run_dir="${configured_workdir}"
+  else
+    run_dir="$(mktemp -d)"
+    remove_run_dir=true
+  fi
 
   echo "[${provider}] Sending warmup prompt..."
   set +e
@@ -155,7 +168,9 @@ run_provider() {
   fi
   status=$?
   set -e
-  rm -rf "${run_dir}"
+  if [[ "${remove_run_dir}" == "true" ]]; then
+    rm -rf "${run_dir}"
+  fi
 
   if [[ ${status} -eq 0 ]]; then
     echo "[${provider}] Warmup complete."

@@ -157,10 +157,21 @@ function Split-Args {
 }
 
 function Invoke-InTempDirectory {
-  param([scriptblock] $Script)
+  param(
+    [scriptblock] $Script,
+    [string] $WorkDirectory = ""
+  )
 
-  $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString("N"))
-  New-Item -ItemType Directory -Path $runDir | Out-Null
+  $removeRunDir = $false
+  if ([string]::IsNullOrWhiteSpace($WorkDirectory)) {
+    $runDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $runDir | Out-Null
+    $removeRunDir = $true
+  }
+  else {
+    $runDir = Expand-UserPath $WorkDirectory
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+  }
 
   try {
     Push-Location $runDir
@@ -168,7 +179,9 @@ function Invoke-InTempDirectory {
   }
   finally {
     Pop-Location
-    Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($removeRunDir) {
+      Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 
@@ -183,6 +196,7 @@ function Invoke-ProviderWarmup {
   $commandPath = Expand-UserPath (Get-ConfigValue $Config "${prefix}_PATH" $Provider)
   $credentialPath = Expand-UserPath (Get-ConfigValue $Config "${prefix}_CREDENTIAL_PATH")
   $envFile = Expand-UserPath (Get-ConfigValue $Config "${prefix}_ENV_FILE")
+  $workDirectory = Expand-UserPath (Get-ConfigValue $Config "${prefix}_WORKDIR")
   $args = Split-Args (Get-ConfigValue $Config "${prefix}_ARGS")
   $model = Get-ConfigValue $Config "${prefix}_MODEL"
 
@@ -209,6 +223,8 @@ function Invoke-ProviderWarmup {
     $args += @("--model", $model)
   }
 
+  $providerEnv["GITHUB_TOKEN"] = $null
+
   Write-Host "[$Provider] Sending warmup prompt..."
   try {
     Invoke-InTempDirectory {
@@ -220,7 +236,7 @@ function Invoke-ProviderWarmup {
           & $commandPath $prompt @args
         }
       }
-    }
+    } -WorkDirectory $workDirectory
     Write-Host "[$Provider] Warmup complete."
   }
   catch {
