@@ -24,7 +24,7 @@ concurrency:
 env:
   WARMUP_TIMEZONE: ${{ vars.WARMUP_TIMEZONE || 'Asia/Shanghai' }}
   WARMUP_HOURS: ${{ vars.WARMUP_HOURS || '8,13,18' }}
-  WARMUP_PROMPT: "${{ vars.WARMUP_PROMPT || 'Warmup. Use smallest available model. Reply: OK' }}"
+  WARMUP_PROMPT: "${{ vars.WARMUP_PROMPT || 'Warmup. Don't think. Just reply: OK' }}"
 
 jobs:
   schedule-gate:
@@ -103,7 +103,7 @@ jobs:
         run: bash ./scripts/warmup-codex.sh
 
   warmup-gemini:
-    name: �� Wake Up Gemini
+    name: 🤖 Wake Up Gemini
     runs-on: ubuntu-latest
     timeout-minutes: 8
     needs: schedule-gate
