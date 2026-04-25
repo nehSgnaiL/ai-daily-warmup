@@ -1,86 +1,92 @@
 # ai-daily-warmup
 
-Auto-schedule AI CLI wakeups (Claude, Codex, Gemini) with GitHub Actions using official `auth login` sessions (no API keys in repo).
+Auto-wakeups for AI CLI (e.g., Claude, Codex, Gemini) via GitHub Actions, since several AI CLI tools grant a *5-hour limit window* per session. 
 
-## What this does
+If you want that window to **open right when you sit down to work in the morning, at lunch, and in the evening**, this repo schedules small "warmup" prompts at those three times every day using GitHub Actions.
 
-- Runs hourly in GitHub Actions.
-- Checks your configured local timezone/hour window.
-- Only sends warmup prompts at matching local hours (default: `8,13,18`).
-- Uses a very short default prompt to minimize token usage.
+- **Zero secrets in code**: credentials live exclusively in GitHub Actions Secrets.
+- **Auth-login, not API keys**: uses the official OAuth `auth login` flow of each CLI.
+- **Minimal setup**: fork → add secrets and variables → done.
 
-## Auth model (official way)
+---
 
-This repo relies on official CLI OAuth login flows:
+## Quick Start
 
-- `claude auth login`
-- `codex auth login`
-- `gemini auth login`
+### 1. Fork this repo
 
-Store session files as encrypted GitHub Actions secrets (never commit credentials):
+Click **Fork** on the top-right of this page. All the workflow files come along automatically.
 
-- `CLAUDE_SESSION` ← `~/.claude/.credentials.json`
-- `CODEX_SESSION` ← `~/.codex/auth.json`
-- `GEMINI_SESSION` ← `~/.gemini/oauth_creds.json`
+### 2. Authenticate locally and capture the session token
 
-If a secret is missing, that CLI job is skipped.
+For each CLI tool you want to use, run `auth login` on your **local machine** and copy the resulting credential file.
 
-## Timezone as variable
+#### Claude
 
-Yes — timezone and hours are variable-driven via **Repository Variables**:
+```bash
+# Install
+npm install -g @anthropic-ai/claude-code
 
-Go to: **Settings → Secrets and variables → Actions → Variables**
+# Login (opens browser OAuth flow)
+claude auth login
+
+# Copy the session JSON (single line, no newline)
+cat ~/.claude/.credentials.json
+```
+
+#### Codex
+
+```bash
+# Install
+npm install -g @openai/codex
+
+# Login (opens browser OAuth flow)
+codex auth login
+
+# Copy the session JSON
+cat ~/.codex/auth.json
+```
+
+#### Gemini
+
+```bash
+# Install
+npm install -g @google/gemini-cli
+
+# Login (opens browser OAuth flow)
+gemini auth login
+
+# Copy the session JSON
+cat ~/.gemini/oauth_creds.json
+```
+
+### 3. Add the session JSON as a GitHub Secret
+
+Go to your forked repository on GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret Name | Value |
+|-------------|-------|
+| `CLAUDE_SESSION` | Full content of `~/.claude/.credentials.json` |
+| `CODEX_SESSION` | Full content of `~/.codex/auth.json` |
+| `GEMINI_SESSION` | Full content of `~/.gemini/oauth_creds.json` |
+
+> Add only the secrets for the CLIs you use. Any job whose secret is absent is **automatically skipped**.
+
+
+### 4. Set schedule (optional)
+
+Timezone, hours, and wakeup prompt can be set via Repository Variables: Go to: **Settings → Secrets and variables → Actions → Variables**
 
 | Variable | Default | Example | Purpose |
 |---|---|---|---|
 | `WARMUP_TIMEZONE` | `Asia/Shanghai` | `America/Los_Angeles` | Local timezone used for schedule gating |
 | `WARMUP_HOURS` | `8,13,18` | `7,12,19` | Local hours (CSV) when warmup should run |
+| `WARMUP_PROMPT` | `Warmup. Don't think. Just reply: OK` | Custom low-token warmup prompt |
+| `CLAUDE_MODEL`<br>`CODEX_MODEL`<br>`GEMINI_MODEL` | CLI default model is used (unset) | Optional per-CLI model hint variables |
 
 > Why hourly cron? GitHub `on.schedule.cron` cannot read variables directly. So workflow runs hourly and gates per `WARMUP_TIMEZONE` + `WARMUP_HOURS`.
 
-## Smart prompt (minimal tokens)
+## What this does
 
-Default prompt:
-
-`Warmup. Use smallest available model. Reply: OK`
-
-This is intentionally short and model-agnostic.
-
-You can override with a repository variable:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `WARMUP_PROMPT` | `Warmup. Use smallest available model. Reply: OK` | Custom low-token warmup prompt |
-
-Optional per-CLI model hint variables (best effort):
-
-- `CLAUDE_MODEL`
-- `CODEX_MODEL`
-- `GEMINI_MODEL`
-
-If unset, CLI default model is used.
-
-## Quick setup
-
-1. Fork this repo.
-2. Add your session secrets.
-3. (Optional) Set `WARMUP_TIMEZONE`, `WARMUP_HOURS`, `WARMUP_PROMPT`.
-4. Run manually once: **Actions → AI Daily Warmup → Run workflow**.
-
-## Files
-
-- `.github/workflows/daily-warmup.yml` — hourly scheduler + local-time gating
-- `scripts/warmup-claude.sh`
-- `scripts/warmup-codex.sh`
-- `scripts/warmup-gemini.sh`
-
-## Security
-
-- No API keys in repo.
-- No credentials committed.
-- Uses encrypted GitHub secrets only.
-- Workflow uses minimal permission: `permissions: contents: read`.
-
-## License
-
-MIT
+- Runs hourly in GitHub Actions. Checks your configured local timezone/hour window.
+- Only sends warmup prompts at matching local hours (default: `8,13,18`).
+- Uses a very short default prompt to minimize token usage.
