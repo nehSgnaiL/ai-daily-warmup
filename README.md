@@ -11,6 +11,8 @@ If you want that window to **open right when you sit down to work in the morning
 ### 1. Edit [config/warmup.config](config/warmup.config):
 
 ```bash
+# The OS scheduler wakes the runner hourly;
+# the runner only sends prompts during `WARMUP_HOURS` in `WARMUP_TIMEZONE`.
 WARMUP_PROVIDERS=codex
 WARMUP_TIMEZONE=Asia/Hong_Kong
 WARMUP_HOURS=8,13,18
@@ -33,9 +35,9 @@ Windows PowerShell:
 .\scripts\install-schedule.ps1
 ```
 
-That is it. The OS scheduler wakes the runner hourly; the runner only sends prompts during `WARMUP_HOURS` in `WARMUP_TIMEZONE`.
+Done!
 
-To remove it later:
+### 3. To remove it later (optional):
 
 ```bash
 bash ./scripts/install-schedule.sh --uninstall
