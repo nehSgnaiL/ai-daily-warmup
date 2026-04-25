@@ -80,13 +80,13 @@ Timezone, hours, and wakeup prompt can be set via Repository Variables: Go to: *
 |---|---|---|---|
 | `WARMUP_TIMEZONE` | `Asia/Shanghai` | `America/Los_Angeles` | Local timezone used for schedule gating |
 | `WARMUP_HOURS` | `8,13,18` | `7,12,19` | Local hours (CSV) when warmup should run |
-| `WARMUP_PROMPT` | `Warmup. Don't think. Just reply: OK` | Custom low-token warmup prompt |
+| `WARMUP_PROMPT` | `Warmup. Use smallest available model. Reply: OK` | Custom low-token warmup prompt |
 | `CLAUDE_MODEL`<br>`CODEX_MODEL`<br>`GEMINI_MODEL` | CLI default model is used (unset) | Optional per-CLI model hint variables |
 
-> Why hourly cron? GitHub `on.schedule.cron` cannot read variables directly. So workflow runs hourly and gates per `WARMUP_TIMEZONE` + `WARMUP_HOURS`.
+> Why hourly cron? GitHub `on.schedule.cron` cannot read variables directly. So workflow runs one tiny **schedule-gate** job hourly, and provider jobs only run when local hour matches `WARMUP_HOURS`.
 
 ## What this does
 
-- Runs hourly in GitHub Actions. Checks your configured local timezone/hour window.
-- Only sends warmup prompts at matching local hours (default: `8,13,18`).
+- Runs hourly in GitHub Actions with one lightweight gate job.
+- Only launches provider jobs at matching local hours (default: `8,13,18`).
 - Uses a very short default prompt to minimize token usage.
