@@ -1,118 +1,118 @@
 # ============================================================
 # AI Daily Warmup — GitHub Actions Workflow
 # ============================================================
-# Wakes up AI CLI sessions (Claude, Codex, Gemini) on a
-# schedule so that fresh 5-hour usage windows open at
-# convenient local times.
+# Supports variable-driven scheduling:
+# - Repository variable WARMUP_TIMEZONE (IANA TZ, e.g. Asia/Shanghai)
+# - Repository variable WARMUP_HOURS (CSV local hours, e.g. 8,13,18)
 #
-# Default schedule (UTC+8 / CST):
-#   08:00 → cron "0 0 * * *"
-#   13:00 → cron "0 5 * * *"
-#   18:00 → cron "0 10 * * *"
-#
-# To change the timezone offset, shift the UTC hour:
-#   local hour = UTC hour + offset
-#   e.g. UTC+5:30 (IST): 08:00 → "30 2 * * *"
-#
-# Required GitHub Secrets (add only the ones you use):
-#   CLAUDE_SESSION   – contents of ~/.claude/.credentials.json
-#                      obtained by running `claude auth login`
-#   CODEX_SESSION    – contents of ~/.codex/auth.json
-#                      obtained by running `codex auth login`
-#   GEMINI_SESSION   – contents of ~/.gemini/oauth_creds.json
-#                      obtained by running `gemini auth login`
-#
-# No API keys are used. All authentication relies on the
-# official `auth login` OAuth flows of each CLI tool.
+# GitHub schedule cron itself cannot read variables directly, so this workflow
+# runs hourly and each job gates execution by local time derived from variables.
 # ============================================================
 
 name: AI Daily Warmup
 
 on:
   schedule:
-    # ── Adjust these cron expressions to match your timezone ──
-    # Default: 08:00 / 13:00 / 18:00 CST (UTC+8)
-    - cron: '0 0 * * *'   # 08:00 CST
-    - cron: '0 5 * * *'   # 13:00 CST
-    - cron: '0 10 * * *'  # 18:00 CST
-  workflow_dispatch:       # Allow on-demand manual trigger
+    - cron: '0 * * * *' # hourly gate check
+  workflow_dispatch:
 
-# Restrict GITHUB_TOKEN to no permissions — these jobs make no GitHub API calls.
 permissions: {}
 
+env:
+  WARMUP_TIMEZONE: ${{ vars.WARMUP_TIMEZONE || 'Asia/Shanghai' }}
+  WARMUP_HOURS: ${{ vars.WARMUP_HOURS || '8,13,18' }}
+  WARMUP_PROMPT: "${{ vars.WARMUP_PROMPT || 'Warmup. Use smallest available model. Reply: OK' }}"
+
 jobs:
-  # ──────────────────────────────────────────────────────────
-  # Claude  (Anthropic Claude CLI)
-  # Install: npm install -g @anthropic-ai/claude-code
-  # Auth:    claude auth login
-  # ──────────────────────────────────────────────────────────
   warmup-claude:
     name: 🤖 Wake Up Claude
     runs-on: ubuntu-latest
-    # Skip job when the secret is not configured
     if: ${{ secrets.CLAUDE_SESSION != '' }}
     steps:
+      - name: Check local schedule window
+        id: schedule
+        run: |
+          set -euo pipefail
+          hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
+          hour="${hour#0}"
+          hours=",${WARMUP_HOURS// /},"
+          if [[ "${hours}" == *",${hour},"* ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[claude] run=true tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "[claude] run=false tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          fi
+
       - name: Install Claude CLI
+        if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Restore Claude session
+      - name: Run Claude warmup
+        if: steps.schedule.outputs.should_run == 'true'
         env:
           CLAUDE_SESSION: ${{ secrets.CLAUDE_SESSION }}
-        run: |
-          mkdir -p "${HOME}/.claude"
-          printf '%s' "${CLAUDE_SESSION}" > "${HOME}/.claude/.credentials.json"
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || '' }}
+        run: bash ./scripts/warmup-claude.sh
 
-      - name: Warmup prompt
-        run: |
-          echo "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            | claude --print --no-interactive || true
-
-  # ──────────────────────────────────────────────────────────
-  # Codex  (OpenAI Codex CLI)
-  # Install: npm install -g @openai/codex
-  # Auth:    codex auth login
-  # ──────────────────────────────────────────────────────────
   warmup-codex:
     name: 🤖 Wake Up Codex
     runs-on: ubuntu-latest
     if: ${{ secrets.CODEX_SESSION != '' }}
     steps:
+      - name: Check local schedule window
+        id: schedule
+        run: |
+          set -euo pipefail
+          hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
+          hour="${hour#0}"
+          hours=",${WARMUP_HOURS// /},"
+          if [[ "${hours}" == *",${hour},"* ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[codex] run=true tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "[codex] run=false tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          fi
+
       - name: Install Codex CLI
+        if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @openai/codex
 
-      - name: Restore Codex session
+      - name: Run Codex warmup
+        if: steps.schedule.outputs.should_run == 'true'
         env:
           CODEX_SESSION: ${{ secrets.CODEX_SESSION }}
-        run: |
-          mkdir -p "${HOME}/.codex"
-          printf '%s' "${CODEX_SESSION}" > "${HOME}/.codex/auth.json"
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || '' }}
+        run: bash ./scripts/warmup-codex.sh
 
-      - name: Warmup prompt
-        run: |
-          codex "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            --approval-mode full-auto --quiet || true
-
-  # ──────────────────────────────────────────────────────────
-  # Gemini  (Google Gemini CLI)
-  # Install: npm install -g @google/gemini-cli
-  # Auth:    gemini auth login
-  # ──────────────────────────────────────────────────────────
   warmup-gemini:
     name: 🤖 Wake Up Gemini
     runs-on: ubuntu-latest
     if: ${{ secrets.GEMINI_SESSION != '' }}
     steps:
+      - name: Check local schedule window
+        id: schedule
+        run: |
+          set -euo pipefail
+          hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
+          hour="${hour#0}"
+          hours=",${WARMUP_HOURS// /},"
+          if [[ "${hours}" == *",${hour},"* ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "[gemini] run=true tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "[gemini] run=false tz=${WARMUP_TIMEZONE} hour=${hour} hours=${WARMUP_HOURS}"
+          fi
+
       - name: Install Gemini CLI
+        if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @google/gemini-cli
 
-      - name: Restore Gemini session
+      - name: Run Gemini warmup
+        if: steps.schedule.outputs.should_run == 'true'
         env:
           GEMINI_SESSION: ${{ secrets.GEMINI_SESSION }}
-        run: |
-          mkdir -p "${HOME}/.gemini"
-          printf '%s' "${GEMINI_SESSION}" > "${HOME}/.gemini/oauth_creds.json"
-
-      - name: Warmup prompt
-        run: |
-          gemini "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            --yolo || true
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || '' }}
+        run: bash ./scripts/warmup-gemini.sh
