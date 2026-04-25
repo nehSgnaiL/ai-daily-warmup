@@ -7,7 +7,7 @@ AUTH_FILE="${AUTH_DIR}/auth.json"
 
 if [[ -n "${CODEX_SESSION:-}" ]]; then
   mkdir -p "${AUTH_DIR}"
-  printf '%s' "${CODEX_SESSION}" > "${AUTH_FILE}"
+  (umask 077; printf '%s' "${CODEX_SESSION}" > "${AUTH_FILE}")
   echo "[codex] Session restored from environment."
 fi
 

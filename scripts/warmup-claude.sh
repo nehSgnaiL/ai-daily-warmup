@@ -7,7 +7,7 @@ CREDENTIALS_FILE="${CREDENTIALS_DIR}/.credentials.json"
 
 if [[ -n "${CLAUDE_SESSION:-}" ]]; then
   mkdir -p "${CREDENTIALS_DIR}"
-  printf '%s' "${CLAUDE_SESSION}" > "${CREDENTIALS_FILE}"
+  (umask 077; printf '%s' "${CLAUDE_SESSION}" > "${CREDENTIALS_FILE}")
   echo "[claude] Session restored from environment."
 fi
 

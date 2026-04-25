@@ -79,7 +79,7 @@ If unset, CLI default model is used.
 - No API keys in repo.
 - No credentials committed.
 - Uses encrypted GitHub secrets only.
-- Workflow uses `permissions: {}`.
+- Workflow uses minimal permission: `permissions: contents: read`.
 
 ## License
 

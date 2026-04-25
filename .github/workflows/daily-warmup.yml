@@ -16,7 +16,8 @@ on:
     - cron: '0 * * * *' # hourly gate check
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 env:
   WARMUP_TIMEZONE: ${{ vars.WARMUP_TIMEZONE || 'Asia/Shanghai' }}
@@ -34,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
-          hour="${hour#0}"
+          hour="$((10#${hour}))" # force base-10 to safely parse zero-padded hours like 08
           hours=",${WARMUP_HOURS// /},"
           if [[ "${hours}" == *",${hour},"* ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -47,6 +48,10 @@ jobs:
       - name: Install Claude CLI
         if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @anthropic-ai/claude-code
+
+      - name: Checkout repository
+        if: steps.schedule.outputs.should_run == 'true'
+        uses: actions/checkout@v4
 
       - name: Run Claude warmup
         if: steps.schedule.outputs.should_run == 'true'
@@ -65,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
-          hour="${hour#0}"
+          hour="$((10#${hour}))" # force base-10 to safely parse zero-padded hours like 08
           hours=",${WARMUP_HOURS// /},"
           if [[ "${hours}" == *",${hour},"* ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -78,6 +83,10 @@ jobs:
       - name: Install Codex CLI
         if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @openai/codex
+
+      - name: Checkout repository
+        if: steps.schedule.outputs.should_run == 'true'
+        uses: actions/checkout@v4
 
       - name: Run Codex warmup
         if: steps.schedule.outputs.should_run == 'true'
@@ -96,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           hour="$(TZ="${WARMUP_TIMEZONE}" date +%H)"
-          hour="${hour#0}"
+          hour="$((10#${hour}))" # force base-10 to safely parse zero-padded hours like 08
           hours=",${WARMUP_HOURS// /},"
           if [[ "${hours}" == *",${hour},"* ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -109,6 +118,10 @@ jobs:
       - name: Install Gemini CLI
         if: steps.schedule.outputs.should_run == 'true'
         run: npm install -g @google/gemini-cli
+
+      - name: Checkout repository
+        if: steps.schedule.outputs.should_run == 'true'
+        uses: actions/checkout@v4
 
       - name: Run Gemini warmup
         if: steps.schedule.outputs.should_run == 'true'

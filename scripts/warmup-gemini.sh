@@ -7,7 +7,7 @@ CREDS_FILE="${CREDS_DIR}/oauth_creds.json"
 
 if [[ -n "${GEMINI_SESSION:-}" ]]; then
   mkdir -p "${CREDS_DIR}"
-  printf '%s' "${GEMINI_SESSION}" > "${CREDS_FILE}"
+  (umask 077; printf '%s' "${GEMINI_SESSION}" > "${CREDS_FILE}")
   echo "[gemini] Session restored from environment."
 fi
 
