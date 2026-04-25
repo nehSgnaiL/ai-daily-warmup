@@ -102,6 +102,28 @@ config_value() {
   printf '%s\n' "${!name:-}"
 }
 
+warmup_log_path() {
+  expand_path "${WARMUP_LOG_PATH:-~/.local/state/ai-daily-warmup/warmup.log}"
+}
+
+append_warmup_log() {
+  local provider="$1"
+  local result="$2"
+  local status="$3"
+  local log_path log_dir temp_path timestamp
+
+  log_path="$(warmup_log_path)"
+  [[ -z "${log_path}" ]] && return 0
+
+  log_dir="$(dirname "${log_path}")"
+  mkdir -p "${log_dir}"
+  timestamp="$(TZ="${WARMUP_TIMEZONE:-$(date +%Z)}" date '+%Y-%m-%dT%H:%M:%S%z')"
+  printf '%s\t%s\t%s\t%s\n' "${timestamp}" "${provider}" "${result}" "${status}" >> "${log_path}"
+
+  temp_path="${log_path}.$$"
+  tail -n 100 "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}"
+}
+
 run_provider() {
   local provider="$1"
   local prefix path args model credential_path env_file prompt run_dir configured_workdir status
@@ -174,8 +196,10 @@ run_provider() {
 
   if [[ ${status} -eq 0 ]]; then
     echo "[${provider}] Warmup complete."
+    append_warmup_log "${provider}" "success" "${status}"
   else
     echo "[${provider}] Warmup exited with status ${status}."
+    append_warmup_log "${provider}" "failed" "${status}"
   fi
 }
 

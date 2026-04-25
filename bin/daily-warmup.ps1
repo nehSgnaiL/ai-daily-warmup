@@ -156,6 +156,37 @@ function Split-Args {
   return $ArgsText.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
 }
 
+function Get-WarmupLogPath {
+  param([hashtable] $Config)
+
+  return Expand-UserPath (Get-ConfigValue $Config "WARMUP_LOG_PATH" "~/.local/state/ai-daily-warmup/warmup.log")
+}
+
+function Add-WarmupLog {
+  param(
+    [hashtable] $Config,
+    [string] $Provider,
+    [string] $Result,
+    [int] $Status
+  )
+
+  $logPath = Get-WarmupLogPath $Config
+  if ([string]::IsNullOrWhiteSpace($logPath)) {
+    return
+  }
+
+  $logDir = Split-Path -Parent $logPath
+  if (![string]::IsNullOrWhiteSpace($logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+  }
+
+  $targetZone = Resolve-TimeZone (Get-ConfigValue $Config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id))
+  $timestamp = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone).ToString("yyyy-MM-ddTHH:mm:sszzz")
+  Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Result`t$Status"
+  $latestRows = Get-Content -LiteralPath $logPath -Tail 100
+  Set-Content -LiteralPath $logPath -Value $latestRows
+}
+
 function Invoke-InTempDirectory {
   param(
     [scriptblock] $Script,
@@ -226,6 +257,7 @@ function Invoke-ProviderWarmup {
   $providerEnv["GITHUB_TOKEN"] = $null
 
   Write-Host "[$Provider] Sending warmup prompt..."
+  $status = 0
   try {
     Invoke-InTempDirectory {
       Invoke-WithEnvironment $providerEnv {
@@ -235,12 +267,26 @@ function Invoke-ProviderWarmup {
         else {
           & $commandPath $prompt @args
         }
+        if (!$?) {
+          if ($LASTEXITCODE -is [int]) {
+            throw "Command exited with status $LASTEXITCODE."
+          }
+          throw "Command failed."
+        }
       }
     } -WorkDirectory $workDirectory
     Write-Host "[$Provider] Warmup complete."
+    Add-WarmupLog $Config $Provider "success" $status
   }
   catch {
+    if ($LASTEXITCODE -is [int]) {
+      $status = $LASTEXITCODE
+    }
+    else {
+      $status = 1
+    }
     Write-Warning "[$Provider] Warmup failed: $($_.Exception.Message)"
+    Add-WarmupLog $Config $Provider "failed" $status
   }
 }
 
