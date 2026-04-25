@@ -24,9 +24,9 @@ WARMUP_HOURS=8,13,18
 WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
 
 CODEX_PATH=codex
+CODEX_CREDENTIAL_PATH=~/.codex/auth.json
 CODEX_ARGS=--quiet
 CODEX_MODEL=
-CODEX_CREDENTIAL_PATH=~/.codex/auth.json
 ```
 
 Use `WARMUP_PROVIDERS=claude,codex,gemini` to warm up more than one CLI.
@@ -92,11 +92,6 @@ different command or script:
 CODEX_PATH=~/bin/codex-shadow-home.sh
 ```
 
-Set `*_WORKDIR` when a provider should start from a stable workspace:
-
-```bash
-CODEX_WORKDIR=~/user/opt/codex_warmup_workspace
-```
 If `*_PATH` points to a custom script that normally prompts for a username and
 password, keep that behavior inside the script. The warmup runner only needs to
 load an env file and run the configured path.
@@ -120,6 +115,8 @@ EOF
 
 chmod 600 ~/.config/ai-daily-warmup/codex.env
 ```
+
+Details please refer to the comments in [config/default.env](config/default.env).
 
 ## Layout
 
