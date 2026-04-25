@@ -1,7 +1,5 @@
 ## ai-daily-warmup
 
-Small scheduled warmups for AI CLIs such as Codex, Claude, and Gemini, given the *5-hour limit window* from several AI CLIs. 
-
 > We've all been there: you're deep in the zone, making massive progress, and suddenly—bam. You hit your AI's usage cap. Your momentum is shattered, and you're forced into a mandatory "mindset break" right when you need your tools the most.
 
 If you want that limit window to **open right when you sit down to work in the morning, at lunch, and during the night**, this repo schedules small "warmup" prompts to trigger calls daily.
