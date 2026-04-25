@@ -1,0 +1,118 @@
+# ============================================================
+# AI Daily Warmup — GitHub Actions Workflow
+# ============================================================
+# Wakes up AI CLI sessions (Claude, Codex, Gemini) on a
+# schedule so that fresh 5-hour usage windows open at
+# convenient local times.
+#
+# Default schedule (UTC+8 / CST):
+#   08:00 → cron "0 0 * * *"
+#   13:00 → cron "0 5 * * *"
+#   18:00 → cron "0 10 * * *"
+#
+# To change the timezone offset, shift the UTC hour:
+#   local hour = UTC hour + offset
+#   e.g. UTC+5:30 (IST): 08:00 → "30 2 * * *"
+#
+# Required GitHub Secrets (add only the ones you use):
+#   CLAUDE_SESSION   – contents of ~/.claude/.credentials.json
+#                      obtained by running `claude auth login`
+#   CODEX_SESSION    – contents of ~/.codex/auth.json
+#                      obtained by running `codex auth login`
+#   GEMINI_SESSION   – contents of ~/.gemini/oauth_creds.json
+#                      obtained by running `gemini auth login`
+#
+# No API keys are used. All authentication relies on the
+# official `auth login` OAuth flows of each CLI tool.
+# ============================================================
+
+name: AI Daily Warmup
+
+on:
+  schedule:
+    # ── Adjust these cron expressions to match your timezone ──
+    # Default: 08:00 / 13:00 / 18:00 CST (UTC+8)
+    - cron: '0 0 * * *'   # 08:00 CST
+    - cron: '0 5 * * *'   # 13:00 CST
+    - cron: '0 10 * * *'  # 18:00 CST
+  workflow_dispatch:       # Allow on-demand manual trigger
+
+# Restrict GITHUB_TOKEN to no permissions — these jobs make no GitHub API calls.
+permissions: {}
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # Claude  (Anthropic Claude CLI)
+  # Install: npm install -g @anthropic-ai/claude-code
+  # Auth:    claude auth login
+  # ──────────────────────────────────────────────────────────
+  warmup-claude:
+    name: 🤖 Wake Up Claude
+    runs-on: ubuntu-latest
+    # Skip job when the secret is not configured
+    if: ${{ secrets.CLAUDE_SESSION != '' }}
+    steps:
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Restore Claude session
+        env:
+          CLAUDE_SESSION: ${{ secrets.CLAUDE_SESSION }}
+        run: |
+          mkdir -p "${HOME}/.claude"
+          printf '%s' "${CLAUDE_SESSION}" > "${HOME}/.claude/.credentials.json"
+
+      - name: Warmup prompt
+        run: |
+          echo "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            | claude --print --no-interactive || true
+
+  # ──────────────────────────────────────────────────────────
+  # Codex  (OpenAI Codex CLI)
+  # Install: npm install -g @openai/codex
+  # Auth:    codex auth login
+  # ──────────────────────────────────────────────────────────
+  warmup-codex:
+    name: 🤖 Wake Up Codex
+    runs-on: ubuntu-latest
+    if: ${{ secrets.CODEX_SESSION != '' }}
+    steps:
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Restore Codex session
+        env:
+          CODEX_SESSION: ${{ secrets.CODEX_SESSION }}
+        run: |
+          mkdir -p "${HOME}/.codex"
+          printf '%s' "${CODEX_SESSION}" > "${HOME}/.codex/auth.json"
+
+      - name: Warmup prompt
+        run: |
+          codex "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            --approval-mode full-auto --quiet || true
+
+  # ──────────────────────────────────────────────────────────
+  # Gemini  (Google Gemini CLI)
+  # Install: npm install -g @google/gemini-cli
+  # Auth:    gemini auth login
+  # ──────────────────────────────────────────────────────────
+  warmup-gemini:
+    name: 🤖 Wake Up Gemini
+    runs-on: ubuntu-latest
+    if: ${{ secrets.GEMINI_SESSION != '' }}
+    steps:
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
+
+      - name: Restore Gemini session
+        env:
+          GEMINI_SESSION: ${{ secrets.GEMINI_SESSION }}
+        run: |
+          mkdir -p "${HOME}/.gemini"
+          printf '%s' "${GEMINI_SESSION}" > "${HOME}/.gemini/oauth_creds.json"
+
+      - name: Warmup prompt
+        run: |
+          gemini "Daily warmup — $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            --yolo || true
