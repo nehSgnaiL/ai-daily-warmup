@@ -64,6 +64,45 @@ function Read-WarmupConfig {
   return $config
 }
 
+function Merge-WarmupConfig {
+  param(
+    [hashtable] $Base,
+    [hashtable] $Override
+  )
+
+  foreach ($key in $Override.Keys) {
+    $Base[$key] = $Override[$key]
+  }
+
+  return $Base
+}
+
+function Get-LocalConfigPath {
+  param([string] $PrimaryConfigPath)
+
+  if (![string]::IsNullOrWhiteSpace($env:WARMUP_LOCAL_CONFIG_PATH)) {
+    return Resolve-ConfigPath $env:WARMUP_LOCAL_CONFIG_PATH
+  }
+
+  $resolvedPrimaryPath = Resolve-ConfigPath $PrimaryConfigPath
+  return Join-Path (Split-Path -Parent $resolvedPrimaryPath) "local.env"
+}
+
+function Read-MergedWarmupConfig {
+  param([string] $Path)
+
+  $config = Read-WarmupConfig $Path
+  $script:LoadedLocalConfigPath = ""
+
+  $localConfigPath = Get-LocalConfigPath $Path
+  if (Test-Path -LiteralPath $localConfigPath) {
+    $config = Merge-WarmupConfig $config (Read-WarmupConfig $localConfigPath)
+    $script:LoadedLocalConfigPath = $localConfigPath
+  }
+
+  return $config
+}
+
 function Invoke-WithEnvironment {
   param(
     [hashtable] $Environment,
@@ -204,7 +243,7 @@ function Get-ProviderArgs {
 function Get-WarmupLogPath {
   param([hashtable] $Config)
 
-  return Expand-UserPath (Get-ConfigValue $Config "WARMUP_LOG_PATH" "~/.local/state/ai-daily-warmup/warmup.log")
+  return Expand-UserPath (Get-ConfigValue $Config "WARMUP_LOG_PATH" "./logs/warmup.log")
 }
 
 function Add-WarmupLog {
@@ -224,16 +263,21 @@ function Add-WarmupLog {
   }
 
   $logDir = Split-Path -Parent $logPath
-  if (![string]::IsNullOrWhiteSpace($logDir)) {
-    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-  }
+  try {
+    if (![string]::IsNullOrWhiteSpace($logDir)) {
+      New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
 
-  $targetZone = Resolve-TimeZone (Get-ConfigValue $Config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id))
-  $timestamp = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone).ToString("yyyy-MM-ddTHH:mm:sszzz")
-  $cleanMessage = $Message -replace "[`t`r`n]+", " "
-  Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Event`t$Result`t$Status`t$DurationSeconds`t$cleanMessage"
-  $latestRows = Get-Content -LiteralPath $logPath -Tail 100
-  Set-Content -LiteralPath $logPath -Value $latestRows
+    $targetZone = Resolve-TimeZone (Get-ConfigValue $Config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id))
+    $timestamp = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    $cleanMessage = $Message -replace "[`t`r`n]+", " "
+    Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Event`t$Result`t$Status`t$DurationSeconds`t$cleanMessage"
+    $latestRows = Get-Content -LiteralPath $logPath -Tail 100
+    Set-Content -LiteralPath $logPath -Value $latestRows
+  }
+  catch {
+    Write-Warning "[local] Could not write log file: $logPath"
+  }
 }
 
 function Invoke-InTempDirectory {
@@ -347,7 +391,12 @@ function Invoke-ProviderWarmup {
 function Invoke-WarmupOnce {
   param([hashtable] $Config)
 
-  Add-WarmupLog $Config "local" "init" "started" 0 0 "Warmup run started."
+  if (![string]::IsNullOrWhiteSpace($script:LoadedLocalConfigPath)) {
+    Add-WarmupLog $Config "local" "init" "started" 0 0 "Warmup run started. Config: $ConfigPath; local override: $script:LoadedLocalConfigPath."
+  }
+  else {
+    Add-WarmupLog $Config "local" "init" "started" 0 0 "Warmup run started. Config: $ConfigPath; no local override."
+  }
   if (!(Test-ScheduledHour $Config)) {
     Write-Host "[local] Current hour is outside configured schedule."
     Add-WarmupLog $Config "local" "skip" "outside_schedule" 0 0 "Current hour is outside configured schedule."
@@ -366,11 +415,12 @@ function Invoke-WarmupOnce {
 }
 
 try {
-  $config = Read-WarmupConfig $ConfigPath
+  $script:LoadedLocalConfigPath = ""
+  $config = Read-MergedWarmupConfig $ConfigPath
 }
 catch {
   $fallbackConfig = @{
-    "WARMUP_LOG_PATH" = "~/.local/state/ai-daily-warmup/warmup.log"
+    "WARMUP_LOG_PATH" = "./logs/warmup.log"
   }
   Add-WarmupLog $fallbackConfig "local" "init_error" "failed" 1 0 $_.Exception.Message
   throw

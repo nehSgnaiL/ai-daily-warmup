@@ -21,6 +21,7 @@ cd ai-daily-warmup
 WARMUP_PROVIDERS=codex
 WARMUP_TIMEZONE=Asia/Hong_Kong
 WARMUP_HOURS=8,13,18
+WARMUP_LOG_PATH=./logs/warmup.log
 WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
 
 CODEX_PATH=codex
@@ -31,6 +32,8 @@ CODEX_MODEL=
 
 Use `WARMUP_PROVIDERS=claude,codex,gemini` to warm up more than one CLI.
 
+[!NOTE] `config/local.env` can override any value without changing the tracked
+default config `config/default.env`.
 
 #### 3. Install & Done!
 
@@ -61,7 +64,7 @@ bash ./bin/install-scheduler.sh --uninstall
 
 - Check running log
 
-Runs append tab-separated rows to `WARMUP_LOG_PATH`, and the runners keep only the latest 100 rows.
+Runs append tab-separated rows to `WARMUP_LOG_PATH` (`./logs/warmup.log` by default), and the runners keep only the latest 100 rows.
 
 ```text
 timestamp    provider    event    result    exit_code    duration_seconds    message

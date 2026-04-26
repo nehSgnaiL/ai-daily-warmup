@@ -4,10 +4,11 @@ set -euo pipefail
 CONFIG_PATH="${1:-config/default.env}"
 MODE="${2:-once}"
 DEFAULT_WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
+LOADED_LOCAL_CONFIG_PATH=""
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[local] Config file not found: ${CONFIG_PATH}" >&2
-  WARMUP_LOG_PATH="${WARMUP_LOG_PATH:-~/.local/state/ai-daily-warmup/warmup.log}"
+  WARMUP_LOG_PATH="${WARMUP_LOG_PATH:-./logs/warmup.log}"
   append_init_error() {
     local log_path log_dir timestamp temp_path
     case "${WARMUP_LOG_PATH}" in
@@ -27,6 +28,7 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
 fi
 
 load_config() {
+  local config_file="$1"
   local line trimmed key value
 
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -50,10 +52,22 @@ load_config() {
     if [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
       printf -v "${key}" '%s' "${value}"
     fi
-  done < "${CONFIG_PATH}"
+  done < "${config_file}"
 }
 
-load_config
+default_local_config_path() {
+  local config_dir
+  config_dir="$(dirname "${CONFIG_PATH}")"
+  printf '%s\n' "${config_dir}/local.env"
+}
+
+load_config "${CONFIG_PATH}"
+
+LOCAL_CONFIG_PATH="${WARMUP_LOCAL_CONFIG_PATH:-$(default_local_config_path)}"
+if [[ -n "${LOCAL_CONFIG_PATH}" && -f "${LOCAL_CONFIG_PATH}" ]]; then
+  load_config "${LOCAL_CONFIG_PATH}"
+  LOADED_LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH}"
+fi
 
 read_env_file() {
   local env_file="$1"
@@ -121,7 +135,7 @@ config_value() {
 }
 
 warmup_log_path() {
-  expand_path "${WARMUP_LOG_PATH:-~/.local/state/ai-daily-warmup/warmup.log}"
+  expand_path "${WARMUP_LOG_PATH:-./logs/warmup.log}"
 }
 
 append_warmup_log() {
@@ -137,14 +151,20 @@ append_warmup_log() {
   [[ -z "${log_path}" ]] && return 0
 
   log_dir="$(dirname "${log_path}")"
-  mkdir -p "${log_dir}"
+  if ! mkdir -p "${log_dir}" 2>/dev/null; then
+    echo "[local] Could not create log directory: ${log_dir}" >&2
+    return 0
+  fi
   timestamp="$(TZ="${WARMUP_TIMEZONE:-}" date '+%Y-%m-%dT%H:%M:%S%z')"
   message="${message//$'\t'/ }"
   message="${message//$'\n'/ }"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${timestamp}" "${provider}" "${event}" "${result}" "${status}" "${duration_seconds}" "${message}" >> "${log_path}"
+  if ! printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${timestamp}" "${provider}" "${event}" "${result}" "${status}" "${duration_seconds}" "${message}" >> "${log_path}"; then
+    echo "[local] Could not write log file: ${log_path}" >&2
+    return 0
+  fi
 
   temp_path="${log_path}.$$"
-  tail -n 100 "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}"
+  tail -n 100 "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}" || true
 }
 
 append_model_arg() {
@@ -279,7 +299,11 @@ run_provider() {
 }
 
 run_once() {
-  append_warmup_log "local" "init" "started" "0" "0" "Warmup run started."
+  if [[ -n "${LOADED_LOCAL_CONFIG_PATH}" ]]; then
+    append_warmup_log "local" "init" "started" "0" "0" "Warmup run started. Config: ${CONFIG_PATH}; local override: ${LOADED_LOCAL_CONFIG_PATH}."
+  else
+    append_warmup_log "local" "init" "started" "0" "0" "Warmup run started. Config: ${CONFIG_PATH}; no local override."
+  fi
   if ! schedule_matches; then
     echo "[local] Current hour is outside configured schedule."
     append_warmup_log "local" "skip" "outside_schedule" "0" "0" "Current hour is outside configured schedule."
