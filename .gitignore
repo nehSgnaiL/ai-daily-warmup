@@ -1,6 +1,5 @@
 # local deployment
-config/local.env
-bin/local/
+local/
 
 # runtime logs
 logs/

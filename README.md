@@ -32,8 +32,8 @@ CODEX_MODEL=
 
 Use `WARMUP_PROVIDERS=claude,codex,gemini` to warm up more than one CLI.
 
-[!NOTE] `config/local.env` can override any value without changing the tracked
-default config `config/default.env`.
+> [!NOTE] 
+> `local/local.env` can override any value from `config/default.env`. You can keep your own scripts, env files, etc. under `local/`.
 
 #### 3. Install & Done!
 

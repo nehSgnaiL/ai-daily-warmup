@@ -85,7 +85,9 @@ function Get-LocalConfigPath {
   }
 
   $resolvedPrimaryPath = Resolve-ConfigPath $PrimaryConfigPath
-  return Join-Path (Split-Path -Parent $resolvedPrimaryPath) "local.env"
+  $configDir = Split-Path -Parent $resolvedPrimaryPath
+  $repoRoot = Split-Path -Parent $configDir
+  return Join-Path $repoRoot "local\local.env"
 }
 
 function Read-MergedWarmupConfig {

@@ -56,9 +56,10 @@ load_config() {
 }
 
 default_local_config_path() {
-  local config_dir
+  local config_dir repo_root
   config_dir="$(dirname "${CONFIG_PATH}")"
-  printf '%s\n' "${config_dir}/local.env"
+  repo_root="$(cd "${config_dir}/.." && pwd)"
+  printf '%s\n' "${repo_root}/local/local.env"
 }
 
 load_config "${CONFIG_PATH}"
