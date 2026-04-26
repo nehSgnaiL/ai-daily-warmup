@@ -163,18 +163,150 @@ function Get-ConfigValue {
   return $Default
 }
 
-function Test-ScheduledHour {
+function Get-ScheduleHours {
+  param([hashtable] $Config)
+
+  return (Get-ConfigValue $Config "WARMUP_HOURS" "8,13,18").Split(",") | ForEach-Object {
+    $hourText = $_.Trim()
+    if ($hourText -ne "") {
+      $hour = [int] $hourText
+      if ($hour -ge 0 -and $hour -le 23) {
+        $hour
+      }
+    }
+  }
+}
+
+function Get-CurrentScheduleSlot {
   param([hashtable] $Config)
 
   if ((Get-ConfigValue $Config "WARMUP_SCHEDULE_ENABLED" "true") -ne "true") {
-    return $true
+    return "always"
   }
 
   $timeZone = Get-ConfigValue $Config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id)
   $targetZone = Resolve-TimeZone $timeZone
   $now = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone)
-  $hours = (Get-ConfigValue $Config "WARMUP_HOURS" "8,13,18").Split(",") | ForEach-Object { [int] $_.Trim() }
-  return $hours -contains $now.Hour
+  $catchupMinutes = [int] (Get-ConfigValue $Config "WARMUP_SLOT_CATCHUP_MINUTES" "60")
+  if ($catchupMinutes -lt 0) {
+    $catchupMinutes = 60
+  }
+
+  $nowMinutes = ($now.Hour * 60) + $now.Minute
+  $bestDelta = 1441
+  $bestHour = $null
+  foreach ($hour in (Get-ScheduleHours $Config)) {
+    $targetMinutes = $hour * 60
+    $delta = ($nowMinutes - $targetMinutes + 1440) % 1440
+    if ($delta -le $catchupMinutes -and $delta -lt $bestDelta) {
+      $bestDelta = $delta
+      $bestHour = $hour
+    }
+  }
+
+  if ($null -eq $bestHour) {
+    return ""
+  }
+
+  $slotDate = $now.AddMinutes(-1 * $bestDelta)
+  return "{0:yyyy-MM-dd}-{1:D2}" -f $slotDate, $bestHour
+}
+
+function Get-WarmupStatePath {
+  param([hashtable] $Config)
+
+  $configured = Get-ConfigValue $Config "WARMUP_STATE_PATH"
+  if (![string]::IsNullOrWhiteSpace($configured)) {
+    return Expand-UserPath $configured
+  }
+
+  $logPath = Get-WarmupLogPath $Config
+  $logDir = Split-Path -Parent $logPath
+  return Join-Path $logDir "warmup.state"
+}
+
+function Read-WarmupState {
+  param([hashtable] $Config)
+
+  $state = @{}
+  $statePath = Get-WarmupStatePath $Config
+  if (!(Test-Path -LiteralPath $statePath)) {
+    return $state
+  }
+
+  foreach ($line in Get-Content -LiteralPath $statePath) {
+    $parts = $line.Split("=", 2)
+    if ($parts.Count -eq 2) {
+      $state[$parts[0]] = $parts[1]
+    }
+  }
+
+  return $state
+}
+
+function Write-WarmupState {
+  param(
+    [hashtable] $Config,
+    [string] $Slot
+  )
+
+  if ((Get-ConfigValue $Config "WARMUP_SCHEDULE_ENABLED" "true") -ne "true") {
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace($Slot) -or $Slot -eq "always") {
+    return
+  }
+
+  $statePath = Get-WarmupStatePath $Config
+  $stateDir = Split-Path -Parent $statePath
+  if (![string]::IsNullOrWhiteSpace($stateDir)) {
+    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+  }
+
+  $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  Set-Content -LiteralPath $statePath -Value @(
+    "LAST_TRIGGER_SLOT=$Slot",
+    "LAST_TRIGGER_EPOCH=$nowEpoch"
+  )
+}
+
+function Test-ScheduledWindow {
+  param([hashtable] $Config)
+
+  $script:CurrentScheduleSlot = ""
+  $script:ScheduleSkipReason = ""
+
+  $slot = Get-CurrentScheduleSlot $Config
+  if ([string]::IsNullOrWhiteSpace($slot)) {
+    $script:ScheduleSkipReason = "outside_schedule"
+    return $false
+  }
+  if ($slot -eq "always") {
+    $script:CurrentScheduleSlot = $slot
+    return $true
+  }
+
+  $state = Read-WarmupState $Config
+  if ($state.ContainsKey("LAST_TRIGGER_SLOT") -and $state["LAST_TRIGGER_SLOT"] -eq $slot) {
+    $script:ScheduleSkipReason = "already_triggered"
+    return $false
+  }
+
+  $minMinutes = [int] (Get-ConfigValue $Config "WARMUP_MIN_WINDOW_MINUTES" "300")
+  if ($minMinutes -lt 0) {
+    $minMinutes = 300
+  }
+  if ($state.ContainsKey("LAST_TRIGGER_EPOCH") -and $minMinutes -gt 0) {
+    $lastEpoch = [int64] $state["LAST_TRIGGER_EPOCH"]
+    $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ($nowEpoch -lt ($lastEpoch + ($minMinutes * 60))) {
+      $script:ScheduleSkipReason = "previous_window"
+      return $false
+    }
+  }
+
+  $script:CurrentScheduleSlot = $slot
+  return $true
 }
 
 function Test-CommandPath {
@@ -399,12 +531,28 @@ function Invoke-WarmupOnce {
   else {
     Add-WarmupLog $Config "local" "init" "started" 0 0 "Warmup run started. Config: $ConfigPath; no local override."
   }
-  if (!(Test-ScheduledHour $Config)) {
-    Write-Host "[local] Current hour is outside configured schedule."
-    Add-WarmupLog $Config "local" "skip" "outside_schedule" 0 0 "Current hour is outside configured schedule."
-    Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished outside schedule."
+  if (!(Test-ScheduledWindow $Config)) {
+    switch ($script:ScheduleSkipReason) {
+      "previous_window" {
+        Write-Host "[local] Waiting for the next 5-hour window before triggering."
+        Add-WarmupLog $Config "local" "skip" "previous_window" 0 0 "Last trigger is still inside the minimum window interval."
+        Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run deferred until the next window."
+      }
+      "already_triggered" {
+        Write-Host "[local] Current schedule slot already triggered."
+        Add-WarmupLog $Config "local" "skip" "already_triggered" 0 0 "Current schedule slot already triggered."
+        Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished for an already triggered slot."
+      }
+      default {
+        Write-Host "[local] Current time is outside configured schedule."
+        Add-WarmupLog $Config "local" "skip" "outside_schedule" 0 0 "Current time is outside configured schedule."
+        Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished outside schedule."
+      }
+    }
     return
   }
+
+  Write-WarmupState $Config $script:CurrentScheduleSlot
 
   $providers = (Get-ConfigValue $Config "WARMUP_PROVIDERS" "codex").Split(",")
   foreach ($provider in $providers) {
@@ -429,15 +577,12 @@ catch {
 }
 
 if ($Schedule) {
-  $lastRunKey = ""
   while ($true) {
-    $targetZone = Resolve-TimeZone (Get-ConfigValue $config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id))
-    $now = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone)
-    $runKey = "{0:yyyy-MM-dd-HH}" -f $now
-
-    if ((Test-ScheduledHour $config) -and $runKey -ne $lastRunKey) {
+    $slot = Get-CurrentScheduleSlot $config
+    $state = Read-WarmupState $config
+    $lastSlot = if ($state.ContainsKey("LAST_TRIGGER_SLOT")) { $state["LAST_TRIGGER_SLOT"] } else { "" }
+    if (![string]::IsNullOrWhiteSpace($slot) -and $slot -ne $lastSlot) {
       Invoke-WarmupOnce $config
-      $lastRunKey = $runKey
     }
 
     $pollSeconds = [int] (Get-ConfigValue $config "WARMUP_POLL_SECONDS" "60")

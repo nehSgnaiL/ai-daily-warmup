@@ -32,9 +32,6 @@ CODEX_MODEL=
 
 Use `WARMUP_PROVIDERS=claude,codex,gemini` to warm up more than one CLI.
 
-> [!NOTE] 
-> `local/local.env` can override any value from `config/default.env`. You can keep your own scripts, env files, etc. under `local/`.
-
 #### 3. Install & Done!
 
 - #### macOS or Linux:
@@ -70,6 +67,11 @@ Runs append tab-separated rows to `WARMUP_LOG_PATH` (`./logs/warmup.log` by defa
 timestamp    provider    event    result    exit_code    duration_seconds    message
 ```
 
+With the
+default `WARMUP_MIN_WINDOW_MINUTES=302`, a delayed warmup will make the next
+slot wait until a fresh 5-hour window + 2 min delay is available. The runner will store the last trigger slot in `WARMUP_STATE_PATH`. `WARMUP_SLOT_CATCHUP_MINUTES=60`
+keeps a scheduled 1-hour slot eligible for late catch-up runs (check in every `WARMUP_SCHEDULER_INTERVAL_MINUTES=10` minutes).
+
 - Run Once
 
 ```bash
@@ -87,6 +89,9 @@ bash ./bin/daily-warmup.sh config/default.env schedule
 ```
 
 ### Advanced Usage
+
+> [!NOTE] 
+> `local/local.env` can override any value from `config/default.env`. You can keep your own scripts, env files, etc. under `local/`.
 
 Set `*_PATH` to a custom executable path when a provider should run through a
 different command or script:

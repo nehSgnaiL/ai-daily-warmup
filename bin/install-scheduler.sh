@@ -6,6 +6,21 @@ TASK_NAME="${TASK_NAME:-ai-daily-warmup}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER_PATH="${REPO_ROOT}/bin/daily-warmup.sh"
 
+login_home() {
+  local user home
+  user="$(id -un)"
+  if command -v getent >/dev/null 2>&1; then
+    home="$(getent passwd "${user}" | awk -F: '{print $6}')"
+    if [[ -n "${home}" ]]; then
+      printf '%s\n' "${home}"
+      return 0
+    fi
+  fi
+  printf '%s\n' "${HOME}"
+}
+
+USER_HOME="$(login_home)"
+
 usage() {
   cat <<EOF
 Usage:
@@ -21,13 +36,13 @@ fi
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    PLIST_PATH="${HOME}/Library/LaunchAgents/com.${TASK_NAME}.plist"
+    PLIST_PATH="${USER_HOME}/Library/LaunchAgents/com.${TASK_NAME}.plist"
     launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
     rm -f "${PLIST_PATH}"
     echo "Removed LaunchAgent: com.${TASK_NAME}"
   elif command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now "${TASK_NAME}.timer" >/dev/null 2>&1 || true
-    rm -f "${HOME}/.config/systemd/user/${TASK_NAME}.service" "${HOME}/.config/systemd/user/${TASK_NAME}.timer"
+    rm -f "${USER_HOME}/.config/systemd/user/${TASK_NAME}.service" "${USER_HOME}/.config/systemd/user/${TASK_NAME}.timer"
     systemctl --user daemon-reload
     echo "Removed systemd user timer: ${TASK_NAME}.timer"
   else
@@ -78,8 +93,18 @@ for index in "${!HOURS[@]}"; do
   fi
 done
 
+SCHEDULER_INTERVAL_MINUTES="$(config_value WARMUP_SCHEDULER_INTERVAL_MINUTES)"
+if [[ -z "${SCHEDULER_INTERVAL_MINUTES}" ]]; then
+  SCHEDULER_INTERVAL_MINUTES=10
+fi
+if ! [[ "${SCHEDULER_INTERVAL_MINUTES}" =~ ^[0-9]+$ ]] || (( SCHEDULER_INTERVAL_MINUTES < 1 || SCHEDULER_INTERVAL_MINUTES > 60 )); then
+  echo "Invalid WARMUP_SCHEDULER_INTERVAL_MINUTES: ${SCHEDULER_INTERVAL_MINUTES}" >&2
+  exit 1
+fi
+SCHEDULER_INTERVAL_SECONDS="$((SCHEDULER_INTERVAL_MINUTES * 60))"
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  PLIST_PATH="${HOME}/Library/LaunchAgents/com.${TASK_NAME}.plist"
+  PLIST_PATH="${USER_HOME}/Library/LaunchAgents/com.${TASK_NAME}.plist"
   mkdir -p "$(dirname "${PLIST_PATH}")"
 
   {
@@ -98,15 +123,12 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   </array>
   <key>WorkingDirectory</key>
   <string>${REPO_ROOT}</string>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <key>StartInterval</key>
+  <integer>${SCHEDULER_INTERVAL_SECONDS}</integer>
   <key>StandardOutPath</key>
-  <string>${HOME}/Library/Logs/${TASK_NAME}.log</string>
+  <string>${USER_HOME}/Library/Logs/${TASK_NAME}.log</string>
   <key>StandardErrorPath</key>
-  <string>${HOME}/Library/Logs/${TASK_NAME}.log</string>
+  <string>${USER_HOME}/Library/Logs/${TASK_NAME}.log</string>
 </dict>
 </plist>
 EOF
@@ -116,8 +138,9 @@ EOF
   launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
   echo "Installed LaunchAgent: com.${TASK_NAME}"
   echo "Warmup hours from config: ${HOURS[*]}"
+  echo "Scheduler interval: every ${SCHEDULER_INTERVAL_MINUTES} minute(s)"
 elif command -v systemctl >/dev/null 2>&1; then
-  SYSTEMD_DIR="${HOME}/.config/systemd/user"
+  SYSTEMD_DIR="${USER_HOME}/.config/systemd/user"
   mkdir -p "${SYSTEMD_DIR}"
 
   cat > "${SYSTEMD_DIR}/${TASK_NAME}.service" <<EOF
@@ -136,7 +159,7 @@ EOF
 Description=Run ${TASK_NAME} on the configured warmup hours
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*:0/${SCHEDULER_INTERVAL_MINUTES}
 Persistent=true
 
 [Install]
@@ -148,6 +171,7 @@ EOF
   systemctl --user enable --now "${TASK_NAME}.timer"
   echo "Installed systemd user timer: ${TASK_NAME}.timer"
   echo "Warmup hours from config: ${HOURS[*]}"
+  echo "Scheduler interval: every ${SCHEDULER_INTERVAL_MINUTES} minute(s)"
 else
   echo "No supported scheduler found. Use './bin/daily-warmup.sh ${CONFIG_PATH} schedule' instead." >&2
   exit 1

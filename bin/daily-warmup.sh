@@ -117,17 +117,157 @@ current_hour() {
   printf '%d\n' "$((10#${raw_hour}))"
 }
 
-schedule_matches() {
-  if [[ "${WARMUP_SCHEDULE_ENABLED:-true}" != "true" ]]; then
+current_epoch() {
+  printf '%s\n' "${WARMUP_NOW_EPOCH:-$(date +%s)}"
+}
+
+format_epoch() {
+  local epoch="$1"
+  local format="$2"
+  if date -d "@0" +%F >/dev/null 2>&1; then
+    TZ="${WARMUP_TIMEZONE:-}" date -d "@${epoch}" "${format}"
+  else
+    TZ="${WARMUP_TIMEZONE:-}" date -r "${epoch}" "${format}"
+  fi
+}
+
+date_for_minutes_ago() {
+  local minutes_ago="$1"
+  local now_epoch="$2"
+  if [[ "${minutes_ago}" -eq 0 ]]; then
+    format_epoch "${now_epoch}" +%F
     return 0
   fi
 
+  format_epoch "$((now_epoch - minutes_ago * 60))" +%F
+}
+
+schedule_hours() {
   local hours hour
   hours="${WARMUP_HOURS:-8,13,18}"
   hours="${hours//[[:space:]]/}"
-  hours=",${hours},"
-  hour="$(current_hour)"
-  [[ "${hours}" == *",${hour},"* ]]
+  IFS=',' read -r -a schedule_hour_list <<< "${hours}"
+  for hour in "${schedule_hour_list[@]}"; do
+    [[ -z "${hour}" ]] && continue
+    if [[ "${hour}" =~ ^[0-9]+$ ]] && (( 10#${hour} >= 0 && 10#${hour} <= 23 )); then
+      printf '%d\n' "$((10#${hour}))"
+    fi
+  done
+}
+
+current_schedule_slot() {
+  if [[ "${WARMUP_SCHEDULE_ENABLED:-true}" != "true" ]]; then
+    printf 'always\n'
+    return 0
+  fi
+
+  local now_epoch raw_hour raw_minute now_minutes catchup_minutes hour target_minutes delta
+  local best_delta=1441 best_hour=""
+
+  now_epoch="$(current_epoch)"
+  raw_hour="$(format_epoch "${now_epoch}" +%H)"
+  raw_minute="$(format_epoch "${now_epoch}" +%M)"
+  now_minutes="$((10#${raw_hour} * 60 + 10#${raw_minute}))"
+  catchup_minutes="${WARMUP_SLOT_CATCHUP_MINUTES:-60}"
+  if ! [[ "${catchup_minutes}" =~ ^[0-9]+$ ]]; then
+    catchup_minutes=60
+  fi
+
+  while IFS= read -r hour; do
+    target_minutes="$((hour * 60))"
+    delta="$(((now_minutes - target_minutes + 1440) % 1440))"
+    if (( delta <= catchup_minutes && delta < best_delta )); then
+      best_delta="${delta}"
+      best_hour="${hour}"
+    fi
+  done < <(schedule_hours)
+
+  [[ -n "${best_hour}" ]] || return 1
+  printf '%s-%02d\n' "$(date_for_minutes_ago "${best_delta}" "${now_epoch}")" "${best_hour}"
+}
+
+warmup_state_path() {
+  local configured log_path log_dir
+  configured="${WARMUP_STATE_PATH:-}"
+  if [[ -n "${configured}" ]]; then
+    expand_path "${configured}"
+    return 0
+  fi
+
+  log_path="$(warmup_log_path)"
+  log_dir="$(dirname "${log_path}")"
+  printf '%s/warmup.state\n' "${log_dir}"
+}
+
+state_value() {
+  local key="$1"
+  local state_path line
+  state_path="$(warmup_state_path)"
+  [[ -f "${state_path}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "${key}="* ]] || continue
+    printf '%s\n' "${line#*=}"
+    return 0
+  done < "${state_path}"
+}
+
+record_schedule_trigger() {
+  local slot="$1"
+  local state_path state_dir temp_path now_epoch
+  [[ "${WARMUP_SCHEDULE_ENABLED:-true}" == "true" ]] || return 0
+  [[ -n "${slot}" && "${slot}" != "always" ]] || return 0
+
+  state_path="$(warmup_state_path)"
+  state_dir="$(dirname "${state_path}")"
+  mkdir -p "${state_dir}"
+  temp_path="${state_path}.$$"
+  now_epoch="$(current_epoch)"
+  {
+    printf 'LAST_TRIGGER_SLOT=%s\n' "${slot}"
+    printf 'LAST_TRIGGER_EPOCH=%s\n' "${now_epoch}"
+  } > "${temp_path}"
+  mv "${temp_path}" "${state_path}"
+}
+
+schedule_matches() {
+  CURRENT_SCHEDULE_SLOT=""
+  SCHEDULE_SKIP_REASON=""
+
+  local slot last_slot last_epoch now_epoch min_minutes min_seconds earliest_epoch
+  if ! slot="$(current_schedule_slot)"; then
+    SCHEDULE_SKIP_REASON="outside_schedule"
+    return 1
+  fi
+
+  if [[ "${slot}" == "always" ]]; then
+    CURRENT_SCHEDULE_SLOT="${slot}"
+    return 0
+  fi
+
+  last_slot="$(state_value LAST_TRIGGER_SLOT)"
+  if [[ "${slot}" == "${last_slot}" ]]; then
+    SCHEDULE_SKIP_REASON="already_triggered"
+    return 1
+  fi
+
+  min_minutes="${WARMUP_MIN_WINDOW_MINUTES:-300}"
+  if ! [[ "${min_minutes}" =~ ^[0-9]+$ ]]; then
+    min_minutes=300
+  fi
+
+  last_epoch="$(state_value LAST_TRIGGER_EPOCH)"
+  if [[ "${last_epoch}" =~ ^[0-9]+$ && "${min_minutes}" -gt 0 ]]; then
+    now_epoch="$(current_epoch)"
+    min_seconds="$((min_minutes * 60))"
+    earliest_epoch="$((last_epoch + min_seconds))"
+    if (( now_epoch < earliest_epoch )); then
+      SCHEDULE_SKIP_REASON="previous_window"
+      return 1
+    fi
+  fi
+
+  CURRENT_SCHEDULE_SLOT="${slot}"
+  return 0
 }
 
 config_value() {
@@ -306,11 +446,27 @@ run_once() {
     append_warmup_log "local" "init" "started" "0" "0" "Warmup run started. Config: ${CONFIG_PATH}; no local override."
   fi
   if ! schedule_matches; then
-    echo "[local] Current hour is outside configured schedule."
-    append_warmup_log "local" "skip" "outside_schedule" "0" "0" "Current hour is outside configured schedule."
-    append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished outside schedule."
+    case "${SCHEDULE_SKIP_REASON}" in
+      previous_window)
+        echo "[local] Waiting for the next 5-hour window before triggering."
+        append_warmup_log "local" "skip" "previous_window" "0" "0" "Last trigger is still inside the minimum window interval."
+        append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run deferred until the next window."
+        ;;
+      already_triggered)
+        echo "[local] Current schedule slot already triggered."
+        append_warmup_log "local" "skip" "already_triggered" "0" "0" "Current schedule slot already triggered."
+        append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished for an already triggered slot."
+        ;;
+      *)
+        echo "[local] Current time is outside configured schedule."
+        append_warmup_log "local" "skip" "outside_schedule" "0" "0" "Current time is outside configured schedule."
+        append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished outside schedule."
+        ;;
+    esac
     return 0
   fi
+
+  record_schedule_trigger "${CURRENT_SCHEDULE_SLOT}"
 
   local provider
   IFS=',' read -r -a provider_list <<< "${WARMUP_PROVIDERS:-codex}"
@@ -323,14 +479,10 @@ run_once() {
 }
 
 if [[ "${MODE}" == "schedule" ]]; then
-  last_run_key=""
   while true; do
-    hour="$(current_hour)"
-    today="$(TZ="${WARMUP_TIMEZONE:-}" date +%F)"
-    run_key="${today}-${hour}"
-    if schedule_matches && [[ "${run_key}" != "${last_run_key}" ]]; then
+    slot="$(current_schedule_slot || true)"
+    if [[ -n "${slot}" && "${slot}" != "$(state_value LAST_TRIGGER_SLOT)" ]]; then
       run_once
-      last_run_key="${run_key}"
     fi
     sleep "${WARMUP_POLL_SECONDS:-60}"
   done

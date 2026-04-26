@@ -79,6 +79,11 @@ $hours = (Get-ConfigValue $config "WARMUP_HOURS" "8,13,18").Split(",") | ForEach
   $hour
 }
 
+$schedulerIntervalMinutes = [int] (Get-ConfigValue $config "WARMUP_SCHEDULER_INTERVAL_MINUTES" "10")
+if ($schedulerIntervalMinutes -lt 1 -or $schedulerIntervalMinutes -gt 60) {
+  throw "Invalid WARMUP_SCHEDULER_INTERVAL_MINUTES: $schedulerIntervalMinutes"
+}
+
 $resolvedConfigPath = Resolve-RepoPath $ConfigPath
 $powerShellPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
@@ -88,7 +93,7 @@ if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
 $argument = "-NoProfile -ExecutionPolicy Bypass -File `"$runnerPath`" -ConfigPath `"$resolvedConfigPath`""
 $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $argument -WorkingDirectory $repoRoot
 $trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::Today)
-$trigger.Repetition.Interval = "PT1H"
+$trigger.Repetition.Interval = "PT${schedulerIntervalMinutes}M"
 $trigger.Repetition.Duration = "P1D"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -StartWhenAvailable
 
@@ -96,3 +101,4 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 Write-Host "Installed scheduled task: $TaskName"
 Write-Host "Warmup hours from config: $($hours -join ', ')"
+Write-Host "Scheduler interval: every $schedulerIntervalMinutes minute(s)"
