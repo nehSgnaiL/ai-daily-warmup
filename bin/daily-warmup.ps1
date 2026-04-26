@@ -156,6 +156,51 @@ function Split-Args {
   return $ArgsText.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
 }
 
+function Get-ProviderArgs {
+  param(
+    [string] $Provider,
+    [array] $Args,
+    [string] $Model,
+    [string] $Prompt
+  )
+
+  $result = @($Args)
+  $firstArg = if ($result.Count -gt 0) { $result[0] } else { "" }
+
+  switch ($Provider) {
+    "codex" {
+      if ($firstArg -ne "exec" -and $firstArg -ne "e") {
+        $result = @("exec", "--skip-git-repo-check", "--ephemeral") + $result
+      }
+      if (![string]::IsNullOrWhiteSpace($Model)) {
+        $result += @("--model", $Model)
+      }
+      $result += $Prompt
+    }
+    "gemini" {
+      if (![string]::IsNullOrWhiteSpace($Model)) {
+        $result += @("--model", $Model)
+      }
+      if (($result -notcontains "--prompt") -and ($result -notcontains "-p")) {
+        $result += @("--prompt", $Prompt)
+      }
+    }
+    "claude" {
+      if (![string]::IsNullOrWhiteSpace($Model)) {
+        $result += @("--model", $Model)
+      }
+    }
+    default {
+      if (![string]::IsNullOrWhiteSpace($Model)) {
+        $result += @("--model", $Model)
+      }
+      $result += $Prompt
+    }
+  }
+
+  return $result
+}
+
 function Get-WarmupLogPath {
   param([hashtable] $Config)
 
@@ -166,8 +211,11 @@ function Add-WarmupLog {
   param(
     [hashtable] $Config,
     [string] $Provider,
+    [string] $Event,
     [string] $Result,
-    [int] $Status
+    [int] $Status,
+    [int] $DurationSeconds = 0,
+    [string] $Message = ""
   )
 
   $logPath = Get-WarmupLogPath $Config
@@ -182,7 +230,8 @@ function Add-WarmupLog {
 
   $targetZone = Resolve-TimeZone (Get-ConfigValue $Config "WARMUP_TIMEZONE" ([System.TimeZoneInfo]::Local.Id))
   $timestamp = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone).ToString("yyyy-MM-ddTHH:mm:sszzz")
-  Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Result`t$Status"
+  $cleanMessage = $Message -replace "[`t`r`n]+", " "
+  Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Event`t$Result`t$Status`t$DurationSeconds`t$cleanMessage"
   $latestRows = Get-Content -LiteralPath $logPath -Tail 100
   Set-Content -LiteralPath $logPath -Value $latestRows
 }
@@ -233,11 +282,13 @@ function Invoke-ProviderWarmup {
 
   if (![string]::IsNullOrWhiteSpace($credentialPath) -and !(Test-Path -LiteralPath $credentialPath)) {
     Write-Warning "[$Provider] No credentials found at $credentialPath. Run the CLI login first."
+    Add-WarmupLog $Config $Provider "skip" "missing_credentials" 0 0 "No credentials found at $credentialPath."
     return
   }
 
   if (!(Test-CommandPath $commandPath)) {
     Write-Warning "[$Provider] Command not found: $commandPath"
+    Add-WarmupLog $Config $Provider "skip" "command_not_found" 0 0 "Command not found: $commandPath."
     return
   }
 
@@ -245,19 +296,20 @@ function Invoke-ProviderWarmup {
   if (![string]::IsNullOrWhiteSpace($envFile)) {
     if (!(Test-Path -LiteralPath $envFile)) {
       Write-Warning "[$Provider] Env file not found: $envFile"
+      Add-WarmupLog $Config $Provider "skip" "missing_env_file" 0 0 "Env file not found: $envFile."
       return
     }
     $providerEnv = Read-WarmupConfig $envFile
   }
 
-  if (![string]::IsNullOrWhiteSpace($model)) {
-    $args += @("--model", $model)
-  }
+  $args = Get-ProviderArgs $Provider $args $model $prompt
 
   $providerEnv["GITHUB_TOKEN"] = $null
 
   Write-Host "[$Provider] Sending warmup prompt..."
   $status = 0
+  $startTime = Get-Date
+  Add-WarmupLog $Config $Provider "start" "running" 0 0 "Starting warmup command."
   try {
     Invoke-InTempDirectory {
       Invoke-WithEnvironment $providerEnv {
@@ -265,7 +317,7 @@ function Invoke-ProviderWarmup {
           $prompt | & $commandPath @args
         }
         else {
-          & $commandPath $prompt @args
+          & $commandPath @args
         }
         if (!$?) {
           if ($LASTEXITCODE -is [int]) {
@@ -275,10 +327,12 @@ function Invoke-ProviderWarmup {
         }
       }
     } -WorkDirectory $workDirectory
+    $durationSeconds = [int] [Math]::Max(0, ((Get-Date) - $startTime).TotalSeconds)
     Write-Host "[$Provider] Warmup complete."
-    Add-WarmupLog $Config $Provider "success" $status
+    Add-WarmupLog $Config $Provider "finish" "success" $status $durationSeconds "Warmup complete."
   }
   catch {
+    $durationSeconds = [int] [Math]::Max(0, ((Get-Date) - $startTime).TotalSeconds)
     if ($LASTEXITCODE -is [int]) {
       $status = $LASTEXITCODE
     }
@@ -286,15 +340,18 @@ function Invoke-ProviderWarmup {
       $status = 1
     }
     Write-Warning "[$Provider] Warmup failed: $($_.Exception.Message)"
-    Add-WarmupLog $Config $Provider "failed" $status
+    Add-WarmupLog $Config $Provider "finish" "failed" $status $durationSeconds "Warmup failed: $($_.Exception.Message)"
   }
 }
 
 function Invoke-WarmupOnce {
   param([hashtable] $Config)
 
+  Add-WarmupLog $Config "local" "init" "started" 0 0 "Warmup run started."
   if (!(Test-ScheduledHour $Config)) {
     Write-Host "[local] Current hour is outside configured schedule."
+    Add-WarmupLog $Config "local" "skip" "outside_schedule" 0 0 "Current hour is outside configured schedule."
+    Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished outside schedule."
     return
   }
 
@@ -305,9 +362,19 @@ function Invoke-WarmupOnce {
       Invoke-ProviderWarmup $providerName $Config
     }
   }
+  Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished."
 }
 
-$config = Read-WarmupConfig $ConfigPath
+try {
+  $config = Read-WarmupConfig $ConfigPath
+}
+catch {
+  $fallbackConfig = @{
+    "WARMUP_LOG_PATH" = "~/.local/state/ai-daily-warmup/warmup.log"
+  }
+  Add-WarmupLog $fallbackConfig "local" "init_error" "failed" 1 0 $_.Exception.Message
+  throw
+}
 
 if ($Schedule) {
   $lastRunKey = ""

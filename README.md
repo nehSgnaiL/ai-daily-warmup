@@ -25,7 +25,7 @@ WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
 
 CODEX_PATH=codex
 CODEX_CREDENTIAL_PATH=~/.codex/auth.json
-CODEX_ARGS=--quiet
+CODEX_ARGS=exec --skip-git-repo-check --ephemeral --color never
 CODEX_MODEL=
 ```
 
@@ -61,10 +61,10 @@ bash ./bin/install-scheduler.sh --uninstall
 
 - Check running log
 
-Each provider run appends one row to `WARMUP_LOG_PATH`, the runners keep only the latest 100 rows.
+Runs append tab-separated rows to `WARMUP_LOG_PATH`, and the runners keep only the latest 100 rows.
 
 ```text
-timestamp    provider    result    exit_code
+timestamp    provider    event    result    exit_code    duration_seconds    message
 ```
 
 - Run Once
