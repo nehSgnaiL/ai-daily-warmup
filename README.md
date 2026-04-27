@@ -61,7 +61,7 @@ bash ./bin/install-scheduler.sh --uninstall
 
 - Check running log
 
-Runs append tab-separated rows to `WARMUP_LOG_PATH` (`./logs/warmup.log` by default), and the runners keep only the latest 100 rows.
+Runs append tab-separated rows to `WARMUP_LOG_PATH` (`./logs/warmup.log` by default), and the runners keep only the latest `WARMUP_LOG_MAX_ROWS` rows.
 
 ```text
 timestamp    provider    event    result    exit_code    duration_seconds    message

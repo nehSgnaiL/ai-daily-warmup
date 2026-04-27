@@ -10,7 +10,7 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[local] Config file not found: ${CONFIG_PATH}" >&2
   WARMUP_LOG_PATH="${WARMUP_LOG_PATH:-./logs/warmup.log}"
   append_init_error() {
-    local log_path log_dir timestamp temp_path
+    local log_path log_dir timestamp temp_path log_max_rows
     case "${WARMUP_LOG_PATH}" in
       "~") log_path="${HOME}" ;;
       "~/"*) log_path="${HOME}/${WARMUP_LOG_PATH#"~/"}" ;;
@@ -21,7 +21,11 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
     timestamp="$(date '+%Y-%m-%dT%H:%M:%S%z')"
     printf '%s\tlocal\tinit_error\tfailed\t1\t0\tConfig file not found: %s\n' "${timestamp}" "${CONFIG_PATH}" >> "${log_path}"
     temp_path="${log_path}.$$"
-    tail -n 100 "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}"
+    log_max_rows="${WARMUP_LOG_MAX_ROWS:-200}"
+    if ! [[ "${log_max_rows}" =~ ^[0-9]+$ && "${log_max_rows}" -gt 0 ]]; then
+      log_max_rows=200
+    fi
+    tail -n "${log_max_rows}" "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}"
   }
   append_init_error || true
   exit 1
@@ -109,6 +113,16 @@ expand_path() {
     "~/"*) printf '%s/%s\n' "${HOME}" "${value#"~/"}" ;;
     *) printf '%s\n' "${value}" ;;
   esac
+}
+
+positive_integer_or_default() {
+  local value="$1"
+  local default_value="$2"
+  if [[ "${value}" =~ ^[0-9]+$ && "${value}" -gt 0 ]]; then
+    printf '%s\n' "${value}"
+  else
+    printf '%s\n' "${default_value}"
+  fi
 }
 
 current_hour() {
@@ -305,7 +319,7 @@ append_warmup_log() {
   fi
 
   temp_path="${log_path}.$$"
-  tail -n 100 "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}" || true
+  tail -n "$(positive_integer_or_default "${WARMUP_LOG_MAX_ROWS:-200}" 200)" "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}" || true
 }
 
 append_model_arg() {
@@ -362,7 +376,7 @@ prepare_provider_command() {
 run_provider() {
   local provider="$1"
   local prefix path args model credential_path env_file prompt run_dir configured_workdir status
-  local remove_run_dir start_seconds duration_seconds
+  local remove_run_dir start_seconds duration_seconds output_path failure_detail failure_log_lines
   local -a arg_list env_pairs
 
   prefix="$(printf '%s' "${provider}" | tr '[:lower:]' '[:upper:]')"
@@ -417,13 +431,15 @@ run_provider() {
   echo "[${provider}] Sending warmup prompt..."
   append_warmup_log "${provider}" "start" "running" "0" "0" "Starting warmup command."
   start_seconds="$(date +%s)"
+  output_path="$(mktemp)"
   set +e
   if [[ "${provider}" == "claude" ]]; then
-    (cd "${run_dir}" && printf '%s' "${prompt}" | env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}")
+    (cd "${run_dir}" && printf '%s' "${prompt}" | env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}") 2>&1 | tee "${output_path}"
+    status=${PIPESTATUS[0]}
   else
-    (cd "${run_dir}" && env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}")
+    (cd "${run_dir}" && env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}") 2>&1 | tee "${output_path}"
+    status=${PIPESTATUS[0]}
   fi
-  status=$?
   duration_seconds="$(( $(date +%s) - start_seconds ))"
   set -e
   if [[ "${remove_run_dir}" == "true" ]]; then
@@ -434,9 +450,16 @@ run_provider() {
     echo "[${provider}] Warmup complete."
     append_warmup_log "${provider}" "finish" "success" "${status}" "${duration_seconds}" "Warmup complete."
   else
+    failure_log_lines="$(positive_integer_or_default "${WARMUP_FAILURE_LOG_LINES:-20}" 20)"
+    failure_detail="$(tail -n "${failure_log_lines}" "${output_path}" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+    if [[ -z "${failure_detail}" ]]; then
+      failure_detail="No provider output captured."
+    fi
     echo "[${provider}] Warmup exited with status ${status}."
-    append_warmup_log "${provider}" "finish" "failed" "${status}" "${duration_seconds}" "Warmup exited with status ${status}."
+    append_warmup_log "${provider}" "finish" "failed" "${status}" "${duration_seconds}" "Warmup exited with status ${status}. Output tail: ${failure_detail}"
   fi
+  rm -f "${output_path}"
+  return "${status}"
 }
 
 run_once() {
@@ -466,16 +489,23 @@ run_once() {
     return 0
   fi
 
-  record_schedule_trigger "${CURRENT_SCHEDULE_SLOT}"
-
-  local provider
+  local provider all_providers_succeeded
+  all_providers_succeeded=true
   IFS=',' read -r -a provider_list <<< "${WARMUP_PROVIDERS:-codex}"
   for provider in "${provider_list[@]}"; do
     provider="${provider// /}"
     [[ -z "${provider}" ]] && continue
-    run_provider "${provider}" || true
+    if ! run_provider "${provider}"; then
+      all_providers_succeeded=false
+    fi
   done
-  append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished."
+  if [[ "${all_providers_succeeded}" == "true" ]]; then
+    record_schedule_trigger "${CURRENT_SCHEDULE_SLOT}"
+    append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished."
+  else
+    append_warmup_log "local" "finish" "failed" "1" "0" "One or more provider warmups failed; schedule slot was left retryable."
+    return 1
+  fi
 }
 
 if [[ "${MODE}" == "schedule" ]]; then

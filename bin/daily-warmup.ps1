@@ -163,6 +163,21 @@ function Get-ConfigValue {
   return $Default
 }
 
+function Get-PositiveIntegerConfig {
+  param(
+    [hashtable] $Config,
+    [string] $Key,
+    [int] $Default
+  )
+
+  $value = 0
+  if ([int]::TryParse((Get-ConfigValue $Config $Key ([string] $Default)), [ref] $value) -and $value -gt 0) {
+    return $value
+  }
+
+  return $Default
+}
+
 function Get-ScheduleHours {
   param([hashtable] $Config)
 
@@ -406,7 +421,7 @@ function Add-WarmupLog {
     $timestamp = [System.TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $targetZone).ToString("yyyy-MM-ddTHH:mm:sszzz")
     $cleanMessage = $Message -replace "[`t`r`n]+", " "
     Add-Content -LiteralPath $logPath -Value "$timestamp`t$Provider`t$Event`t$Result`t$Status`t$DurationSeconds`t$cleanMessage"
-    $latestRows = Get-Content -LiteralPath $logPath -Tail 100
+    $latestRows = Get-Content -LiteralPath $logPath -Tail (Get-PositiveIntegerConfig $Config "WARMUP_LOG_MAX_ROWS" 200)
     Set-Content -LiteralPath $logPath -Value $latestRows
   }
   catch {
@@ -461,12 +476,14 @@ function Invoke-ProviderWarmup {
   if (![string]::IsNullOrWhiteSpace($credentialPath) -and !(Test-Path -LiteralPath $credentialPath)) {
     Write-Warning "[$Provider] No credentials found at $credentialPath. Run the CLI login first."
     Add-WarmupLog $Config $Provider "skip" "missing_credentials" 0 0 "No credentials found at $credentialPath."
+    $script:LastProviderSucceeded = $true
     return
   }
 
   if (!(Test-CommandPath $commandPath)) {
     Write-Warning "[$Provider] Command not found: $commandPath"
     Add-WarmupLog $Config $Provider "skip" "command_not_found" 0 0 "Command not found: $commandPath."
+    $script:LastProviderSucceeded = $true
     return
   }
 
@@ -475,6 +492,7 @@ function Invoke-ProviderWarmup {
     if (!(Test-Path -LiteralPath $envFile)) {
       Write-Warning "[$Provider] Env file not found: $envFile"
       Add-WarmupLog $Config $Provider "skip" "missing_env_file" 0 0 "Env file not found: $envFile."
+      $script:LastProviderSucceeded = $true
       return
     }
     $providerEnv = Read-WarmupConfig $envFile
@@ -487,17 +505,25 @@ function Invoke-ProviderWarmup {
   Write-Host "[$Provider] Sending warmup prompt..."
   $status = 0
   $startTime = Get-Date
+  $outputPath = [System.IO.Path]::GetTempFileName()
+  $script:ProviderExitCode = 0
   Add-WarmupLog $Config $Provider "start" "running" 0 0 "Starting warmup command."
   try {
     Invoke-InTempDirectory {
       Invoke-WithEnvironment $providerEnv {
         if ($Provider -eq "claude") {
-          $prompt | & $commandPath @args
+          $prompt | & $commandPath @args 2>&1 | Tee-Object -FilePath $outputPath
         }
         else {
-          & $commandPath @args
+          & $commandPath @args 2>&1 | Tee-Object -FilePath $outputPath
         }
-        if (!$?) {
+        if ($LASTEXITCODE -is [int]) {
+          $script:ProviderExitCode = $LASTEXITCODE
+        }
+        else {
+          $script:ProviderExitCode = if ($?) { 0 } else { 1 }
+        }
+        if ($script:ProviderExitCode -ne 0) {
           if ($LASTEXITCODE -is [int]) {
             throw "Command exited with status $LASTEXITCODE."
           }
@@ -508,17 +534,32 @@ function Invoke-ProviderWarmup {
     $durationSeconds = [int] [Math]::Max(0, ((Get-Date) - $startTime).TotalSeconds)
     Write-Host "[$Provider] Warmup complete."
     Add-WarmupLog $Config $Provider "finish" "success" $status $durationSeconds "Warmup complete."
+    $script:LastProviderSucceeded = $true
   }
   catch {
     $durationSeconds = [int] [Math]::Max(0, ((Get-Date) - $startTime).TotalSeconds)
-    if ($LASTEXITCODE -is [int]) {
-      $status = $LASTEXITCODE
+    if ($script:ProviderExitCode -is [int]) {
+      $status = $script:ProviderExitCode
     }
     else {
       $status = 1
     }
+    $failureDetail = "No provider output captured."
+    if (Test-Path -LiteralPath $outputPath) {
+      $lineCount = Get-PositiveIntegerConfig $Config "WARMUP_FAILURE_LOG_LINES" 20
+      $captured = (Get-Content -LiteralPath $outputPath -Tail $lineCount -ErrorAction SilentlyContinue) -join " "
+      $captured = ($captured -replace "[`t`r`n]+", " ") -replace "\s+", " "
+      $captured = $captured.Trim()
+      if (![string]::IsNullOrWhiteSpace($captured)) {
+        $failureDetail = $captured
+      }
+    }
     Write-Warning "[$Provider] Warmup failed: $($_.Exception.Message)"
-    Add-WarmupLog $Config $Provider "finish" "failed" $status $durationSeconds "Warmup failed: $($_.Exception.Message)"
+    Add-WarmupLog $Config $Provider "finish" "failed" $status $durationSeconds "Warmup failed: $($_.Exception.Message). Output tail: $failureDetail"
+    $script:LastProviderSucceeded = $false
+  }
+  finally {
+    Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -552,16 +593,26 @@ function Invoke-WarmupOnce {
     return
   }
 
-  Write-WarmupState $Config $script:CurrentScheduleSlot
-
+  $allProvidersSucceeded = $true
   $providers = (Get-ConfigValue $Config "WARMUP_PROVIDERS" "codex").Split(",")
   foreach ($provider in $providers) {
     $providerName = $provider.Trim().ToLowerInvariant()
     if ($providerName -ne "") {
+      $script:LastProviderSucceeded = $true
       Invoke-ProviderWarmup $providerName $Config
+      if (!$script:LastProviderSucceeded) {
+        $allProvidersSucceeded = $false
+      }
     }
   }
-  Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished."
+  if ($allProvidersSucceeded) {
+    Write-WarmupState $Config $script:CurrentScheduleSlot
+    Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished."
+  }
+  else {
+    Add-WarmupLog $Config "local" "finish" "failed" 1 0 "One or more provider warmups failed; schedule slot was left retryable."
+    throw "One or more provider warmups failed."
+  }
 }
 
 try {
@@ -571,6 +622,7 @@ try {
 catch {
   $fallbackConfig = @{
     "WARMUP_LOG_PATH" = "./logs/warmup.log"
+    "WARMUP_LOG_MAX_ROWS" = "200"
   }
   Add-WarmupLog $fallbackConfig "local" "init_error" "failed" 1 0 $_.Exception.Message
   throw
