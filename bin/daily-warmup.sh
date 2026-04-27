@@ -6,6 +6,22 @@ MODE="${2:-once}"
 DEFAULT_WARMUP_PROMPT="Warmup. Don't think, just reply: OK"
 LOADED_LOCAL_CONFIG_PATH=""
 
+prepend_path_dir() {
+  local dir="$1"
+  [[ -d "${dir}" ]] || return 0
+  case ":${PATH:-}:" in
+    *":${dir}:"*) ;;
+    *) PATH="${dir}${PATH:+:${PATH}}" ;;
+  esac
+}
+
+# Schedulers often start with a minimal PATH. Add common per-user CLI install
+# locations so configured wrappers can still resolve provider commands.
+prepend_path_dir "${HOME}/.npm-global/bin"
+prepend_path_dir "${HOME}/.local/bin"
+prepend_path_dir "${HOME}/bin"
+export PATH
+
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[local] Config file not found: ${CONFIG_PATH}" >&2
   WARMUP_LOG_PATH="${WARMUP_LOG_PATH:-./logs/warmup.log}"

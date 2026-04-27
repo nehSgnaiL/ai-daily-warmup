@@ -5,6 +5,29 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Add-PathDirectory {
+  param([string] $Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or !(Test-Path -LiteralPath $Path -PathType Container)) {
+    return
+  }
+
+  $separator = [System.IO.Path]::PathSeparator
+  $parts = @($env:PATH -split [Regex]::Escape([string] $separator) | Where-Object { $_ -ne "" })
+  if ($parts -notcontains $Path) {
+    $env:PATH = $Path + $separator + $env:PATH
+  }
+}
+
+# Schedulers often start with a minimal PATH. Add common per-user CLI install
+# locations so configured wrappers can still resolve provider commands.
+Add-PathDirectory (Join-Path $HOME ".npm-global\bin")
+Add-PathDirectory (Join-Path $HOME ".local\bin")
+Add-PathDirectory (Join-Path $HOME "bin")
+if (![string]::IsNullOrWhiteSpace($env:APPDATA)) {
+  Add-PathDirectory (Join-Path $env:APPDATA "npm")
+}
+
 function Resolve-ConfigPath {
   param([string] $Path)
 
