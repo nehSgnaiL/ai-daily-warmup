@@ -2,7 +2,9 @@
 
 English · [中文](README_ZH.md)
 
-Send a short Codex warmup request at the hours you choose. Give each account its own schedule, command, and log.
+We've all been there: you're deep in the zone, making massive progress, and suddenly—bam. You hit your AI's usage cap. Your momentum is shattered, and you're forced into a mandatory "mindset break" right when you need your tools the most.
+
+If you want that limit window to open right when you sit down to work in the morning, at lunch, and during the night, this repo schedules small "warmup" prompts to trigger calls daily.
 
 ## Get started
 
