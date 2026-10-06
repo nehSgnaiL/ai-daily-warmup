@@ -71,12 +71,16 @@ if (!(Test-Path -LiteralPath $runnerPath)) {
 }
 
 $config = Read-WarmupConfig $ConfigPath
-$hours = (Get-ConfigValue $config "WARMUP_HOURS" "8,13,18").Split(",") | ForEach-Object {
-  $hour = [int] $_.Trim()
-  if ($hour -lt 0 -or $hour -gt 23) {
-    throw "Invalid hour in WARMUP_HOURS: $hour"
+$localConfigPath = if (![string]::IsNullOrWhiteSpace($env:WARMUP_LOCAL_CONFIG_PATH)) {
+  $env:WARMUP_LOCAL_CONFIG_PATH
+} else {
+  Get-ConfigValue $config "WARMUP_LOCAL_CONFIG_PATH" (Join-Path $repoRoot "local\local.env")
+}
+if (Test-Path -LiteralPath $localConfigPath) {
+  $localConfig = Read-WarmupConfig $localConfigPath
+  foreach ($key in $localConfig.Keys) {
+    $config[$key] = $localConfig[$key]
   }
-  $hour
 }
 
 $schedulerIntervalMinutes = [int] (Get-ConfigValue $config "WARMUP_SCHEDULER_INTERVAL_MINUTES" "10")
@@ -100,5 +104,4 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -StartWhenAvai
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Warm up configured AI CLIs." -Force | Out-Null
 
 Write-Host "Installed scheduled task: $TaskName"
-Write-Host "Warmup hours from config: $($hours -join ', ')"
 Write-Host "Scheduler interval: every $schedulerIntervalMinutes minute(s)"

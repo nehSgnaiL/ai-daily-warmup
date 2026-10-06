@@ -20,7 +20,7 @@ function Add-PathDirectory {
 }
 
 # Schedulers often start with a minimal PATH. Add common per-user CLI install
-# locations so configured wrappers can still resolve provider commands.
+# locations so custom commands can still resolve the CLI.
 Add-PathDirectory (Join-Path $HOME ".npm-global\bin")
 Add-PathDirectory (Join-Path $HOME ".local\bin")
 Add-PathDirectory (Join-Path $HOME "bin")
@@ -236,7 +236,7 @@ function Get-CurrentScheduleSlot {
   foreach ($hour in (Get-ScheduleHours $Config)) {
     $targetMinutes = $hour * 60
     $delta = ($nowMinutes - $targetMinutes + 1440) % 1440
-    if ($delta -le $catchupMinutes -and $delta -lt $bestDelta) {
+    if (($delta -lt $catchupMinutes -or ($catchupMinutes -eq 0 -and $delta -eq 0)) -and $delta -lt $bestDelta) {
       $bestDelta = $delta
       $bestHour = $hour
     }
@@ -378,36 +378,13 @@ function Get-ProviderArgs {
   $result = @($Args)
   $firstArg = if ($result.Count -gt 0) { $result[0] } else { "" }
 
-  switch ($Provider) {
-    "codex" {
-      if ($firstArg -ne "exec" -and $firstArg -ne "e") {
-        $result = @("exec", "--skip-git-repo-check", "--ephemeral") + $result
-      }
-      if (![string]::IsNullOrWhiteSpace($Model)) {
-        $result += @("--model", $Model)
-      }
-      $result += $Prompt
-    }
-    "gemini" {
-      if (![string]::IsNullOrWhiteSpace($Model)) {
-        $result += @("--model", $Model)
-      }
-      if (($result -notcontains "--prompt") -and ($result -notcontains "-p")) {
-        $result += @("--prompt", $Prompt)
-      }
-    }
-    "claude" {
-      if (![string]::IsNullOrWhiteSpace($Model)) {
-        $result += @("--model", $Model)
-      }
-    }
-    default {
-      if (![string]::IsNullOrWhiteSpace($Model)) {
-        $result += @("--model", $Model)
-      }
-      $result += $Prompt
-    }
+  if ($firstArg -ne "exec" -and $firstArg -ne "e") {
+    $result = @("exec", "--skip-git-repo-check", "--ephemeral") + $result
   }
+  if (![string]::IsNullOrWhiteSpace($Model)) {
+    $result += @("--model", $Model)
+  }
+  $result += $Prompt
 
   return $result
 }
@@ -498,15 +475,15 @@ function Invoke-ProviderWarmup {
 
   if (![string]::IsNullOrWhiteSpace($credentialPath) -and !(Test-Path -LiteralPath $credentialPath)) {
     Write-Warning "[$Provider] No credentials found at $credentialPath. Run the CLI login first."
-    Add-WarmupLog $Config $Provider "skip" "missing_credentials" 0 0 "No credentials found at $credentialPath."
-    $script:LastProviderSucceeded = $true
+    Add-WarmupLog $Config $Provider "skip" "missing_credentials" 1 0 "No credentials found at $credentialPath."
+    $script:LastProviderSucceeded = $false
     return
   }
 
   if (!(Test-CommandPath $commandPath)) {
     Write-Warning "[$Provider] Command not found: $commandPath"
-    Add-WarmupLog $Config $Provider "skip" "command_not_found" 0 0 "Command not found: $commandPath."
-    $script:LastProviderSucceeded = $true
+    Add-WarmupLog $Config $Provider "skip" "command_not_found" 1 0 "Command not found: $commandPath."
+    $script:LastProviderSucceeded = $false
     return
   }
 
@@ -514,8 +491,8 @@ function Invoke-ProviderWarmup {
   if (![string]::IsNullOrWhiteSpace($envFile)) {
     if (!(Test-Path -LiteralPath $envFile)) {
       Write-Warning "[$Provider] Env file not found: $envFile"
-      Add-WarmupLog $Config $Provider "skip" "missing_env_file" 0 0 "Env file not found: $envFile."
-      $script:LastProviderSucceeded = $true
+      Add-WarmupLog $Config $Provider "skip" "missing_env_file" 1 0 "Env file not found: $envFile."
+      $script:LastProviderSucceeded = $false
       return
     }
     $providerEnv = Read-WarmupConfig $envFile
@@ -534,12 +511,7 @@ function Invoke-ProviderWarmup {
   try {
     Invoke-InTempDirectory {
       Invoke-WithEnvironment $providerEnv {
-        if ($Provider -eq "claude") {
-          $prompt | & $commandPath @args 2>&1 | Tee-Object -FilePath $outputPath
-        }
-        else {
-          & $commandPath @args 2>&1 | Tee-Object -FilePath $outputPath
-        }
+        & $commandPath @args 2>&1 | Tee-Object -FilePath $outputPath
         if ($LASTEXITCODE -is [int]) {
           $script:ProviderExitCode = $LASTEXITCODE
         }
@@ -616,31 +588,24 @@ function Invoke-WarmupOnce {
     return
   }
 
-  $allProvidersSucceeded = $true
-  $providers = (Get-ConfigValue $Config "WARMUP_PROVIDERS" "codex").Split(",")
-  foreach ($provider in $providers) {
-    $providerName = $provider.Trim().ToLowerInvariant()
-    if ($providerName -ne "") {
-      $script:LastProviderSucceeded = $true
-      Invoke-ProviderWarmup $providerName $Config
-      if (!$script:LastProviderSucceeded) {
-        $allProvidersSucceeded = $false
-      }
-    }
-  }
-  if ($allProvidersSucceeded) {
+  $script:LastProviderSucceeded = $true
+  Invoke-ProviderWarmup "codex" $Config
+  if ($script:LastProviderSucceeded) {
     Write-WarmupState $Config $script:CurrentScheduleSlot
     Add-WarmupLog $Config "local" "finish" "complete" 0 0 "Warmup run finished."
   }
   else {
-    Add-WarmupLog $Config "local" "finish" "failed" 1 0 "One or more provider warmups failed; schedule slot was left retryable."
-    throw "One or more provider warmups failed."
+    Add-WarmupLog $Config "local" "finish" "failed" 1 0 "Codex warmup failed; schedule slot was left retryable."
+    throw "Codex warmup failed."
   }
 }
 
 try {
   $script:LoadedLocalConfigPath = ""
   $config = Read-MergedWarmupConfig $ConfigPath
+  if (![string]::IsNullOrWhiteSpace((Get-ConfigValue $config "WARMUP_ACCOUNTS"))) {
+    throw "Account profiles require bin/daily-warmup.sh (Bash)."
+  }
 }
 catch {
   $fallbackConfig = @{

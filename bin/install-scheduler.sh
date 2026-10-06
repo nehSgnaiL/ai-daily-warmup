@@ -66,41 +66,15 @@ if [[ ! -f "${RUNNER_PATH}" ]]; then
   exit 1
 fi
 
-config_value() {
-  local key="$1"
-  awk -F= -v key="${key}" '
-    $0 !~ /^[[:space:]]*#/ && $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
-      value=$2
-      sub(/^[[:space:]]+/, "", value)
-      sub(/[[:space:]]+$/, "", value)
-      gsub(/^"|"$/, "", value)
-      print value
-      exit
-    }
-  ' "${CONFIG_PATH}"
-}
+source "${REPO_ROOT}/bin/config.sh"
+load_warmup_config
 
-IFS=',' read -r -a HOURS <<< "$(config_value WARMUP_HOURS)"
-if [[ ${#HOURS[@]} -eq 0 || -z "${HOURS[0]}" ]]; then
-  HOURS=(8 13 18)
-fi
-
-for index in "${!HOURS[@]}"; do
-  HOURS[$index]="${HOURS[$index]// /}"
-  if ! [[ "${HOURS[$index]}" =~ ^[0-9]+$ ]] || (( HOURS[$index] < 0 || HOURS[$index] > 23 )); then
-    echo "Invalid hour in WARMUP_HOURS: ${HOURS[$index]}" >&2
-    exit 1
-  fi
-done
-
-SCHEDULER_INTERVAL_MINUTES="$(config_value WARMUP_SCHEDULER_INTERVAL_MINUTES)"
-if [[ -z "${SCHEDULER_INTERVAL_MINUTES}" ]]; then
-  SCHEDULER_INTERVAL_MINUTES=10
-fi
-if ! [[ "${SCHEDULER_INTERVAL_MINUTES}" =~ ^[0-9]+$ ]] || (( SCHEDULER_INTERVAL_MINUTES < 1 || SCHEDULER_INTERVAL_MINUTES > 60 )); then
+SCHEDULER_INTERVAL_MINUTES="${WARMUP_SCHEDULER_INTERVAL_MINUTES:-10}"
+if ! [[ "${SCHEDULER_INTERVAL_MINUTES}" =~ ^[0-9]{1,2}$ ]] || (( 10#${SCHEDULER_INTERVAL_MINUTES} < 1 || 10#${SCHEDULER_INTERVAL_MINUTES} > 60 )); then
   echo "Invalid WARMUP_SCHEDULER_INTERVAL_MINUTES: ${SCHEDULER_INTERVAL_MINUTES}" >&2
   exit 1
 fi
+SCHEDULER_INTERVAL_MINUTES="$((10#${SCHEDULER_INTERVAL_MINUTES}))"
 SCHEDULER_INTERVAL_SECONDS="$((SCHEDULER_INTERVAL_MINUTES * 60))"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -137,7 +111,6 @@ EOF
   launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
   echo "Installed LaunchAgent: com.${TASK_NAME}"
-  echo "Warmup hours from config: ${HOURS[*]}"
   echo "Scheduler interval: every ${SCHEDULER_INTERVAL_MINUTES} minute(s)"
 elif command -v systemctl >/dev/null 2>&1; then
   SYSTEMD_DIR="${USER_HOME}/.config/systemd/user"
@@ -170,7 +143,6 @@ EOF
   systemctl --user daemon-reload
   systemctl --user enable --now "${TASK_NAME}.timer"
   echo "Installed systemd user timer: ${TASK_NAME}.timer"
-  echo "Warmup hours from config: ${HOURS[*]}"
   echo "Scheduler interval: every ${SCHEDULER_INTERVAL_MINUTES} minute(s)"
 else
   echo "No supported scheduler found. Use './bin/daily-warmup.sh ${CONFIG_PATH} schedule' instead." >&2

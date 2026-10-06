@@ -16,107 +16,13 @@ prepend_path_dir() {
 }
 
 # Schedulers often start with a minimal PATH. Add common per-user CLI install
-# locations so configured wrappers can still resolve provider commands.
+# locations so custom commands can still resolve the CLI.
 prepend_path_dir "${HOME}/.npm-global/bin"
 prepend_path_dir "${HOME}/.local/bin"
 prepend_path_dir "${HOME}/bin"
 export PATH
 
-if [[ ! -f "${CONFIG_PATH}" ]]; then
-  echo "[local] Config file not found: ${CONFIG_PATH}" >&2
-  WARMUP_LOG_PATH="${WARMUP_LOG_PATH:-./logs/warmup.log}"
-  append_init_error() {
-    local log_path log_dir timestamp temp_path log_max_rows
-    case "${WARMUP_LOG_PATH}" in
-      "~") log_path="${HOME}" ;;
-      "~/"*) log_path="${HOME}/${WARMUP_LOG_PATH#"~/"}" ;;
-      *) log_path="${WARMUP_LOG_PATH}" ;;
-    esac
-    log_dir="$(dirname "${log_path}")"
-    mkdir -p "${log_dir}"
-    timestamp="$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    printf '%s\tlocal\tinit_error\tfailed\t1\t0\tConfig file not found: %s\n' "${timestamp}" "${CONFIG_PATH}" >> "${log_path}"
-    temp_path="${log_path}.$$"
-    log_max_rows="${WARMUP_LOG_MAX_ROWS:-200}"
-    if ! [[ "${log_max_rows}" =~ ^[0-9]+$ && "${log_max_rows}" -gt 0 ]]; then
-      log_max_rows=200
-    fi
-    tail -n "${log_max_rows}" "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}"
-  }
-  append_init_error || true
-  exit 1
-fi
-
-load_config() {
-  local config_file="$1"
-  local line trimmed key value
-
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%$'\r'}"
-    trimmed="${line#"${line%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-
-    [[ -z "${trimmed}" || "${trimmed}" == \#* ]] && continue
-    [[ "${trimmed}" != *=* ]] && continue
-
-    key="${trimmed%%=*}"
-    value="${trimmed#*=}"
-    key="${key%"${key##*[![:space:]]}"}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-
-    if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-
-    if [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      printf -v "${key}" '%s' "${value}"
-    fi
-  done < "${config_file}"
-}
-
-default_local_config_path() {
-  local config_dir repo_root
-  config_dir="$(dirname "${CONFIG_PATH}")"
-  repo_root="$(cd "${config_dir}/.." && pwd)"
-  printf '%s\n' "${repo_root}/local/local.env"
-}
-
-load_config "${CONFIG_PATH}"
-
-LOCAL_CONFIG_PATH="${WARMUP_LOCAL_CONFIG_PATH:-$(default_local_config_path)}"
-if [[ -n "${LOCAL_CONFIG_PATH}" && -f "${LOCAL_CONFIG_PATH}" ]]; then
-  load_config "${LOCAL_CONFIG_PATH}"
-  LOADED_LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH}"
-fi
-
-read_env_file() {
-  local env_file="$1"
-  local line trimmed key value
-
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%$'\r'}"
-    trimmed="${line#"${line%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-
-    [[ -z "${trimmed}" || "${trimmed}" == \#* ]] && continue
-    [[ "${trimmed}" != *=* ]] && continue
-
-    key="${trimmed%%=*}"
-    value="${trimmed#*=}"
-    key="${key%"${key##*[![:space:]]}"}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-
-    if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-
-    if [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      printf '%s=%s\0' "${key}" "${value}"
-    fi
-  done < "${env_file}"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 expand_path() {
   local value="$1"
@@ -141,12 +47,6 @@ positive_integer_or_default() {
   fi
 }
 
-current_hour() {
-  local raw_hour
-  raw_hour="$(TZ="${WARMUP_TIMEZONE:-}" date +%H)"
-  printf '%d\n' "$((10#${raw_hour}))"
-}
-
 current_epoch() {
   printf '%s\n' "${WARMUP_NOW_EPOCH:-$(date +%s)}"
 }
@@ -164,11 +64,6 @@ format_epoch() {
 date_for_minutes_ago() {
   local minutes_ago="$1"
   local now_epoch="$2"
-  if [[ "${minutes_ago}" -eq 0 ]]; then
-    format_epoch "${now_epoch}" +%F
-    return 0
-  fi
-
   format_epoch "$((now_epoch - minutes_ago * 60))" +%F
 }
 
@@ -182,6 +77,32 @@ schedule_hours() {
     if [[ "${hour}" =~ ^[0-9]+$ ]] && (( 10#${hour} >= 0 && 10#${hour} <= 23 )); then
       printf '%d\n' "$((10#${hour}))"
     fi
+  done
+}
+
+validate_schedule() {
+  case "${WARMUP_SCHEDULE_ENABLED:-true}" in
+    false) return 0 ;;
+    true) ;;
+    *) echo '[local] WARMUP_SCHEDULE_ENABLED must be true or false.' >&2; return 1 ;;
+  esac
+  local hours hour key value
+  WARMUP_MIN_WINDOW_MINUTES="${WARMUP_MIN_WINDOW_MINUTES:-302}"
+  WARMUP_SLOT_CATCHUP_MINUTES="${WARMUP_SLOT_CATCHUP_MINUTES:-60}"
+  hours="${WARMUP_HOURS:-8,13,18}"
+  hours="${hours//[[:space:]]/}"
+  [[ "${hours}" =~ ^([0-9]{1,2},)*[0-9]{1,2}$ ]] || {
+    echo '[local] WARMUP_HOURS must be comma-separated hours from 0 to 23.' >&2; return 1;
+  }
+  local -a hours_to_check
+  IFS=',' read -r -a hours_to_check <<< "${hours}"
+  for hour in "${hours_to_check[@]}"; do
+    (( 10#${hour} <= 23 )) || { echo '[local] Hour must be from 0 to 23.' >&2; return 1; }
+  done
+  for key in WARMUP_MIN_WINDOW_MINUTES WARMUP_SLOT_CATCHUP_MINUTES; do
+    value="${!key}"
+    [[ "${value}" =~ ^[0-9]+$ ]] || { echo "[local] ${key} must be a nonnegative integer." >&2; return 1; }
+    printf -v "${key}" '%d' "$((10#${value}))"
   done
 }
 
@@ -206,7 +127,7 @@ current_schedule_slot() {
   while IFS= read -r hour; do
     target_minutes="$((hour * 60))"
     delta="$(((now_minutes - target_minutes + 1440) % 1440))"
-    if (( delta <= catchup_minutes && delta < best_delta )); then
+    if (( (delta < catchup_minutes || (catchup_minutes == 0 && delta == 0)) && delta < best_delta )); then
       best_delta="${delta}"
       best_hour="${hour}"
     fi
@@ -249,14 +170,14 @@ record_schedule_trigger() {
 
   state_path="$(warmup_state_path)"
   state_dir="$(dirname "${state_path}")"
-  mkdir -p "${state_dir}"
+  mkdir -p "${state_dir}" || return 1
   temp_path="${state_path}.$$"
   now_epoch="$(current_epoch)"
   {
     printf 'LAST_TRIGGER_SLOT=%s\n' "${slot}"
     printf 'LAST_TRIGGER_EPOCH=%s\n' "${now_epoch}"
-  } > "${temp_path}"
-  mv "${temp_path}" "${state_path}"
+  } > "${temp_path}" || return 1
+  mv "${temp_path}" "${state_path}" || return 1
 }
 
 schedule_matches() {
@@ -280,10 +201,7 @@ schedule_matches() {
     return 1
   fi
 
-  min_minutes="${WARMUP_MIN_WINDOW_MINUTES:-300}"
-  if ! [[ "${min_minutes}" =~ ^[0-9]+$ ]]; then
-    min_minutes=300
-  fi
+  min_minutes="${WARMUP_MIN_WINDOW_MINUTES:-302}"
 
   last_epoch="$(state_value LAST_TRIGGER_EPOCH)"
   if [[ "${last_epoch}" =~ ^[0-9]+$ && "${min_minutes}" -gt 0 ]]; then
@@ -298,11 +216,6 @@ schedule_matches() {
 
   CURRENT_SCHEDULE_SLOT="${slot}"
   return 0
-}
-
-config_value() {
-  local name="$1"
-  printf '%s\n' "${!name:-}"
 }
 
 warmup_log_path() {
@@ -338,88 +251,45 @@ append_warmup_log() {
   tail -n "$(positive_integer_or_default "${WARMUP_LOG_MAX_ROWS:-200}" 200)" "${log_path}" > "${temp_path}" && mv "${temp_path}" "${log_path}" || true
 }
 
-append_model_arg() {
-  local provider="$1"
-  local model="$2"
+prepare_codex_command() {
+  local model="$1"
+  local prompt="$2"
 
-  [[ -z "${model}" ]] && return 0
-
-  case "${provider}" in
-    codex | gemini | claude)
-      arg_list+=(--model "${model}")
-      ;;
-    *)
-      arg_list+=(--model "${model}")
-      ;;
-  esac
+  # Split simple flags without expanding filesystem wildcards.
+  read -r -a arg_list <<< "${args}"
+  if [[ "${arg_list[0]:-}" != "exec" && "${arg_list[0]:-}" != "e" ]]; then
+    arg_list=(exec --skip-git-repo-check --ephemeral "${arg_list[@]}")
+  fi
+  [[ -z "${model}" ]] || arg_list+=(--model "${model}")
+  arg_list+=("${prompt}")
 }
 
-prepare_provider_command() {
-  local provider="$1"
-  local model="$2"
-  local prompt="$3"
-  local first_arg
-
-  # Intentional word splitting: config args are simple CLI flags.
-  # shellcheck disable=SC2206
-  arg_list=(${args})
-
-  first_arg="${arg_list[0]:-}"
-  case "${provider}" in
-    codex)
-      if [[ "${first_arg}" != "exec" && "${first_arg}" != "e" ]]; then
-        arg_list=(exec --skip-git-repo-check --ephemeral "${arg_list[@]}")
-      fi
-      append_model_arg "${provider}" "${model}"
-      arg_list+=("${prompt}")
-      ;;
-    gemini)
-      append_model_arg "${provider}" "${model}"
-      if [[ " ${arg_list[*]} " != *" --prompt "* && " ${arg_list[*]} " != *" -p "* ]]; then
-        arg_list+=(--prompt "${prompt}")
-      fi
-      ;;
-    claude)
-      append_model_arg "${provider}" "${model}"
-      ;;
-    *)
-      append_model_arg "${provider}" "${model}"
-      arg_list+=("${prompt}")
-      ;;
-  esac
-}
-
-run_provider() {
-  local provider="$1"
-  local prefix path args model credential_path env_file prompt run_dir configured_workdir status
+run_codex() {
+  local path args model credential_path env_file prompt run_dir configured_workdir status
   local remove_run_dir start_seconds duration_seconds output_path failure_detail failure_log_lines
+  local pair
   local -a arg_list env_pairs
 
-  prefix="$(printf '%s' "${provider}" | tr '[:lower:]' '[:upper:]')"
-  path="$(expand_path "$(config_value "${prefix}_PATH")")"
-  args="$(config_value "${prefix}_ARGS")"
-  model="$(config_value "${prefix}_MODEL")"
-  credential_path="$(expand_path "$(config_value "${prefix}_CREDENTIAL_PATH")")"
-  env_file="$(expand_path "$(config_value "${prefix}_ENV_FILE")")"
-  configured_workdir="$(expand_path "$(config_value "${prefix}_WORKDIR")")"
+  path="$(expand_path "${CODEX_PATH:-codex}")"
+  args="${CODEX_ARGS:-}"
+  model="${CODEX_MODEL:-}"
+  credential_path="$(expand_path "${CODEX_CREDENTIAL_PATH:-}")"
+  env_file="$(expand_path "${CODEX_ENV_FILE:-}")"
+  configured_workdir="$(expand_path "${CODEX_WORKDIR:-}")"
   prompt="${WARMUP_PROMPT:-${DEFAULT_WARMUP_PROMPT}}"
 
-  if [[ -z "${path}" ]]; then
-    path="${provider}"
-  fi
-
   if [[ -n "${credential_path}" && ! -f "${credential_path}" ]]; then
-    echo "[${provider}] No credentials found at ${credential_path}. Run the CLI login first." >&2
-    append_warmup_log "${provider}" "skip" "missing_credentials" "0" "0" "No credentials found at ${credential_path}."
-    return 0
+    echo "[codex] No credentials found at ${credential_path}. Run the CLI login first." >&2
+    append_warmup_log "codex" "skip" "missing_credentials" "1" "0" "No credentials found at ${credential_path}."
+    return 1
   fi
 
   env_pairs=()
   if [[ -n "${env_file}" ]]; then
-    if [[ ! -f "${env_file}" ]]; then
-      echo "[${provider}] Env file not found: ${env_file}" >&2
-      append_warmup_log "${provider}" "skip" "missing_env_file" "0" "0" "Env file not found: ${env_file}."
-      return 0
+    if [[ ! -f "${env_file}" || ! -r "${env_file}" ]]; then
+      echo "[codex] Env file not found: ${env_file}" >&2
+      append_warmup_log "codex" "skip" "missing_env_file" "1" "0" "Env file not found: ${env_file}."
+      return 1
     fi
 
     while IFS= read -r -d '' pair; do
@@ -428,34 +298,29 @@ run_provider() {
   fi
 
   if ! command -v "${path}" >/dev/null 2>&1 && [[ ! -x "${path}" ]]; then
-    echo "[${provider}] Command not found: ${path}" >&2
-    append_warmup_log "${provider}" "skip" "command_not_found" "0" "0" "Command not found: ${path}."
-    return 0
+    echo "[codex] Command not found: ${path}" >&2
+    append_warmup_log "codex" "skip" "command_not_found" "1" "0" "Command not found: ${path}."
+    return 1
   fi
 
-  prepare_provider_command "${provider}" "${model}" "${prompt}"
+  prepare_codex_command "${model}" "${prompt}"
 
   remove_run_dir=false
   if [[ -n "${configured_workdir}" ]]; then
-    mkdir -p "${configured_workdir}"
+    mkdir -p "${configured_workdir}" || return 1
     run_dir="${configured_workdir}"
   else
-    run_dir="$(mktemp -d)"
+    run_dir="$(mktemp -d)" || return 1
     remove_run_dir=true
   fi
 
-  echo "[${provider}] Sending warmup prompt..."
-  append_warmup_log "${provider}" "start" "running" "0" "0" "Starting warmup command."
+  echo "[codex] Sending warmup prompt..."
+  append_warmup_log "codex" "start" "running" "0" "0" "Starting warmup command."
   start_seconds="$(date +%s)"
   output_path="$(mktemp)"
   set +e
-  if [[ "${provider}" == "claude" ]]; then
-    (cd "${run_dir}" && printf '%s' "${prompt}" | env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}") 2>&1 | tee "${output_path}"
-    status=${PIPESTATUS[0]}
-  else
-    (cd "${run_dir}" && env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}") 2>&1 | tee "${output_path}"
-    status=${PIPESTATUS[0]}
-  fi
+  (cd "${run_dir}" && env -u GITHUB_TOKEN "${env_pairs[@]}" "${path}" "${arg_list[@]}") 2>&1 | tee "${output_path}"
+  status=${PIPESTATUS[0]}
   duration_seconds="$(( $(date +%s) - start_seconds ))"
   set -e
   if [[ "${remove_run_dir}" == "true" ]]; then
@@ -463,22 +328,23 @@ run_provider() {
   fi
 
   if [[ ${status} -eq 0 ]]; then
-    echo "[${provider}] Warmup complete."
-    append_warmup_log "${provider}" "finish" "success" "${status}" "${duration_seconds}" "Warmup complete."
+    echo "[codex] Warmup complete."
+    append_warmup_log "codex" "finish" "success" "${status}" "${duration_seconds}" "Warmup complete."
   else
     failure_log_lines="$(positive_integer_or_default "${WARMUP_FAILURE_LOG_LINES:-20}" 20)"
     failure_detail="$(tail -n "${failure_log_lines}" "${output_path}" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
     if [[ -z "${failure_detail}" ]]; then
       failure_detail="No provider output captured."
     fi
-    echo "[${provider}] Warmup exited with status ${status}."
-    append_warmup_log "${provider}" "finish" "failed" "${status}" "${duration_seconds}" "Warmup exited with status ${status}. Output tail: ${failure_detail}"
+    echo "[codex] Warmup exited with status ${status}."
+    append_warmup_log "codex" "finish" "failed" "${status}" "${duration_seconds}" "Warmup exited with status ${status}. Output tail: ${failure_detail}"
   fi
   rm -f "${output_path}"
   return "${status}"
 }
 
 run_once() {
+  validate_schedule || return 1
   if [[ -n "${LOADED_LOCAL_CONFIG_PATH}" ]]; then
     append_warmup_log "local" "init" "started" "0" "0" "Warmup run started. Config: ${CONFIG_PATH}; local override: ${LOADED_LOCAL_CONFIG_PATH}."
   else
@@ -505,33 +371,64 @@ run_once() {
     return 0
   fi
 
-  local provider all_providers_succeeded
-  all_providers_succeeded=true
-  IFS=',' read -r -a provider_list <<< "${WARMUP_PROVIDERS:-codex}"
-  for provider in "${provider_list[@]}"; do
-    provider="${provider// /}"
-    [[ -z "${provider}" ]] && continue
-    if ! run_provider "${provider}"; then
-      all_providers_succeeded=false
-    fi
-  done
-  if [[ "${all_providers_succeeded}" == "true" ]]; then
-    record_schedule_trigger "${CURRENT_SCHEDULE_SLOT}"
+  if run_codex; then
+    record_schedule_trigger "${CURRENT_SCHEDULE_SLOT}" || return 1
     append_warmup_log "local" "finish" "complete" "0" "0" "Warmup run finished."
   else
-    append_warmup_log "local" "finish" "failed" "1" "0" "One or more provider warmups failed; schedule slot was left retryable."
+    append_warmup_log "local" "finish" "failed" "1" "0" "Codex warmup failed; schedule slot was left retryable."
     return 1
   fi
 }
 
-if [[ "${MODE}" == "schedule" ]]; then
-  while true; do
-    slot="$(current_schedule_slot || true)"
-    if [[ -n "${slot}" && "${slot}" != "$(state_value LAST_TRIGGER_SLOT)" ]]; then
-      run_once
+run_accounts() {
+  if [[ -z "${WARMUP_ACCOUNTS:-}" ]]; then
+    run_once
+    return
+  fi
+
+  local account profile config_dir status=0
+  config_dir="$(expand_path "${WARMUP_ACCOUNT_CONFIG_DIR:-$(dirname "${CONFIG_PATH}")/../local/accounts}")"
+  local -a accounts
+  IFS=',' read -r -a accounts <<< "${WARMUP_ACCOUNTS}"
+  for account in "${accounts[@]}"; do
+    if ! [[ "${account}" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
+      echo '[local] Invalid account name in WARMUP_ACCOUNTS.' >&2
+      status=1
+      continue
     fi
-    sleep "${WARMUP_POLL_SECONDS:-60}"
+    profile="${config_dir}/${account}.env"
+    if [[ ! -f "${profile}" ]]; then
+      echo "[${account}] Account profile not found: ${profile}" >&2
+      status=1
+      continue
+    fi
+    # Subshells isolate account overrides and independent retry state.
+    if ! (
+      WARMUP_STATE_PATH="$(warmup_state_path).${account}"
+      WARMUP_LOG_PATH="$(warmup_log_path).${account}"
+      WARMUP_ACCOUNT="${account}"
+      load_config "${profile}" || exit 1
+      export WARMUP_ACCOUNT
+      echo "[${account}] Checking warmup schedule..."
+      run_once
+    ); then
+      status=1
+    fi
   done
+  return "${status}"
+}
+
+if ! load_warmup_config; then
+  append_warmup_log local init_error failed 1 0 "Could not load configuration: ${CONFIG_PATH}."
+  return 1 2>/dev/null || exit 1
 fi
 
-run_once
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [[ "${MODE}" == "schedule" ]]; then
+    while true; do
+      run_accounts || true
+      sleep "${WARMUP_POLL_SECONDS:-60}"
+    done
+  fi
+  run_accounts
+fi
